@@ -1,6 +1,8 @@
 import * as Cause from "effect/Cause"
 import { Effect } from "effect"
 
+import { applyOutputPolicy, type OutputPolicy } from "./artifacts"
+
 interface SuccessEnvelope {
   readonly ok: true
   readonly command: string
@@ -34,6 +36,35 @@ const isTaggedError = (
   "_tag" in error &&
   typeof (error as Record<string, unknown>)._tag === "string"
 
+const retryableHttpStatus = (status: number) =>
+  status === 408 || status === 409 || status === 425 || status === 429 || status >= 500
+
+const redactSecrets = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(redactSecrets)
+  }
+
+  if (!value || typeof value !== "object") {
+    return value
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => {
+      const normalized = key.toLowerCase()
+      const shouldRedact =
+        normalized.includes("api_key") ||
+        normalized.includes("x-api-key") ||
+        normalized.includes("authorization") ||
+        normalized.includes("password") ||
+        normalized.includes("secret") ||
+        normalized === "token" ||
+        normalized.endsWith("_token")
+
+      return [key, shouldRedact ? "[REDACTED]" : redactSecrets(nested)]
+    }),
+  )
+}
+
 export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
   if (isTaggedError(error)) {
     switch (error._tag) {
@@ -41,7 +72,11 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
         return {
           type: error._tag,
           message: error.message,
-          details: { field: error.field as string },
+          details: {
+            field: error.field as string,
+            hint: "Set a valid configuration value and rerun the command.",
+            retryable: false,
+          },
         }
       }
       case "MissingApiKeyError": {
@@ -51,6 +86,8 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           details: {
             env_var: error.envVar as string,
             hint: error.hint as string,
+            next_step: `Export ${error.envVar as string} and rerun the command.`,
+            retryable: false,
           },
         }
       }
@@ -61,6 +98,8 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           details: {
             source: error.source as string,
             reason: error.reason as string,
+            hint: "Provide a JSON object, JSON array, @file path, or - for stdin.",
+            retryable: false,
           },
         }
       }
@@ -68,7 +107,34 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
         return {
           type: error._tag,
           message: error.message,
-          details: { field: error.field as string },
+          details: {
+            field: error.field as string,
+            hint: "Fix the command input and rerun the command.",
+            retryable: false,
+          },
+        }
+      }
+      case "IdempotencyConflictError": {
+        return {
+          type: error._tag,
+          message: error.message,
+          details: {
+            key: error.key as string,
+            command: error.command as string,
+            hint: "Use the same payload for this idempotency key, or choose a new key.",
+            retryable: false,
+          },
+        }
+      }
+      case "ArtifactWriteError": {
+        return {
+          type: error._tag,
+          message: error.message,
+          details: {
+            path: error.path as string,
+            hint: "Check artifact directory permissions or set PARALLEL_CLI_ARTIFACT_DIR.",
+            retryable: true,
+          },
         }
       }
       case "ApiRequestError": {
@@ -79,18 +145,34 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
             method: error.method as string,
             path: error.path as string,
             reason: error.reason as string,
+            provider_request: {
+              method: error.method as string,
+              path: error.path as string,
+            },
+            hint: "Retry after checking network connectivity and the configured API base URL.",
+            retryable: true,
           },
         }
       }
       case "ApiResponseError": {
+        const status = error.status as number
         return {
           type: error._tag,
           message: error.message,
           details: {
             method: error.method as string,
             path: error.path as string,
-            status: error.status as number,
-            body: error.body,
+            status,
+            provider_request: {
+              method: error.method as string,
+              path: error.path as string,
+              status,
+            },
+            body: redactSecrets(error.body),
+            hint: retryableHttpStatus(status)
+              ? "Retry with backoff or lower concurrency if the provider is rate limiting."
+              : "Check the request payload, credentials, billing, or provider resource id.",
+            retryable: retryableHttpStatus(status),
           },
         }
       }
@@ -101,6 +183,12 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           details: {
             method: error.method as string,
             path: error.path as string,
+            provider_request: {
+              method: error.method as string,
+              path: error.path as string,
+            },
+            hint: "The provider response did not match the CLI schema; upgrade the CLI or report the response shape.",
+            retryable: false,
           },
         }
       }
@@ -165,8 +253,17 @@ export const writeCauseEnvelope = (command: string | undefined, cause: Cause.Cau
     ),
   )
 
-export const executeJsonCommand = <A, E, R>(command: string, effect: Effect.Effect<A, E, R>) =>
+export const executeJsonCommand = <A, E, R>(
+  command: string,
+  effect: Effect.Effect<A, E, R>,
+  options?: {
+    readonly outputPolicy?: OutputPolicy
+  },
+) =>
   effect.pipe(
+    Effect.flatMap((data) =>
+      applyOutputPolicy(command, data, options?.outputPolicy ?? "inline"),
+    ),
     Effect.flatMap((data) => writeSuccessEnvelope(command, data)),
     Effect.catchAll((error) =>
       setExitCode(1).pipe(Effect.zipRight(writeFailureEnvelope(command, error))),

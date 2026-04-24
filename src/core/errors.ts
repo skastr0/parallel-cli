@@ -33,6 +33,23 @@ export class CommandInputError extends Schema.TaggedError<CommandInputError>()(
   },
 ) {}
 
+export class IdempotencyConflictError extends Schema.TaggedError<IdempotencyConflictError>()(
+  "IdempotencyConflictError",
+  {
+    key: Schema.String,
+    command: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export class ArtifactWriteError extends Schema.TaggedError<ArtifactWriteError>()(
+  "ArtifactWriteError",
+  {
+    path: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
 export class ApiRequestError extends Schema.TaggedError<ApiRequestError>()(
   "ApiRequestError",
   {
@@ -68,6 +85,8 @@ export type AppError =
   | MissingApiKeyError
   | JsonInputError
   | CommandInputError
+  | IdempotencyConflictError
+  | ArtifactWriteError
   | ApiRequestError
   | ApiResponseError
   | ApiDecodeError

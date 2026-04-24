@@ -31,6 +31,14 @@ interface RequestSpec<A, I, R> {
   readonly responseSchema: Schema.Schema<A, I, R>
 }
 
+interface RequestTextSpec {
+  readonly method: HttpMethod
+  readonly path: string
+  readonly query?: Record<string, string | undefined>
+  readonly body?: unknown
+  readonly headers?: Record<string, string>
+}
+
 const compactQuery = (query: Record<string, string | undefined> | undefined) => {
   if (!query) {
     return undefined
@@ -130,7 +138,7 @@ const extractApiMessage = (status: number, body: unknown) => {
   return `API request failed with status ${status}`
 }
 
-export const requestJson = <A, I, R>(spec: RequestSpec<A, I, R>) =>
+const requestTextInternal = (spec: RequestTextSpec) =>
   Effect.gen(function* () {
     const client = yield* baseClient
     const request = buildRequest(spec)
@@ -172,6 +180,15 @@ export const requestJson = <A, I, R>(spec: RequestSpec<A, I, R>) =>
         }),
       )
     }
+
+    return responseText
+  })
+
+export const requestText = (spec: RequestTextSpec) => requestTextInternal(spec)
+
+export const requestJson = <A, I, R>(spec: RequestSpec<A, I, R>) =>
+  Effect.gen(function* () {
+    const responseText = yield* requestTextInternal(spec)
 
     if (responseText.trim().length === 0) {
       return yield* Effect.fail(

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
+import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 
 import { MissingApiKeyError } from "../src/core/errors"
 import { toErrorDetails } from "../src/core/output"
@@ -14,7 +17,12 @@ interface RecordedRequest {
 }
 
 const withMockServer = <A>(
-  handler: (request: RecordedRequest) => { readonly status?: number; readonly body: unknown },
+  handler: (request: RecordedRequest) => {
+    readonly status?: number
+    readonly body?: unknown
+    readonly rawBody?: string
+    readonly contentType?: string
+  },
   run: (baseUrl: string, requests: ReadonlyArray<RecordedRequest>) => Effect.Effect<A>,
 ) =>
   Effect.async<A>((resume) => {
@@ -35,8 +43,8 @@ const withMockServer = <A>(
 
         const result = handler(recorded)
         response.statusCode = result.status ?? 200
-        response.setHeader("content-type", "application/json")
-        response.end(JSON.stringify(result.body))
+        response.setHeader("content-type", result.contentType ?? "application/json")
+        response.end(result.rawBody ?? JSON.stringify(result.body))
       })
     })
 
@@ -126,6 +134,133 @@ describe("parallel CLI", () => {
     ),
   )
 
+  it.effect("search accepts @file and stdin input modes", () =>
+    withMockServer(
+      (request) => ({
+        body: {
+          search_id: request.body && typeof request.body === "object" && "objective" in request.body
+            ? `search_${request.body.objective}`
+            : "search_unknown",
+          results: [],
+        },
+      }),
+      (baseUrl, requests) =>
+        Effect.gen(function* () {
+          const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "parallel-cli-input-")))
+          const filePath = join(dir, "search.json")
+          yield* Effect.promise(() => writeFile(filePath, '{"objective":"file"}\n', "utf8"))
+
+          const fileResult = yield* runCli(["search", `@${filePath}`], {
+            PARALLEL_API_KEY: "test-key",
+            PARALLEL_API_BASE_URL: baseUrl,
+          })
+          const stdinResult = yield* runCli(["search", "-"], {
+            PARALLEL_API_KEY: "test-key",
+            PARALLEL_API_BASE_URL: baseUrl,
+          }, { stdinText: '{"objective":"stdin"}' })
+
+          expect(fileResult.exitCode).toBe(0)
+          expect(stdinResult.exitCode).toBe(0)
+          expect(requests.map((request) => request.body)).toEqual([
+            { objective: "file", mode: "one-shot", max_results: 10 },
+            { objective: "stdin", mode: "one-shot", max_results: 10 },
+          ])
+        }),
+    ),
+  )
+
+  it.effect("search array input returns ordered batch partial failures", () =>
+    withMockServer(
+      (request) => ({
+        body: {
+          search_id: `search_${(request.body as { objective: string }).objective}`,
+          results: [],
+        },
+      }),
+      (baseUrl, requests) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(
+            [
+              "search",
+              "--concurrency",
+              "2",
+              '[{"objective":"first"},{"bad":true},{"objective":"third"}]',
+            ],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+            },
+          )
+          const payload = expectJson<{
+            ok: boolean
+            data: {
+              outcome: string
+              total: number
+              success_count: number
+              error_count: number
+              concurrency: number
+              results: ReadonlyArray<{ index: number; ok: boolean }>
+            }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(1)
+          expect(result.stderr.trim()).toBe("")
+          expect(payload.ok).toBe(true)
+          expect(payload.data.outcome).toBe("partial_failure")
+          expect(payload.data.total).toBe(3)
+          expect(payload.data.success_count).toBe(2)
+          expect(payload.data.error_count).toBe(1)
+          expect(payload.data.concurrency).toBe(2)
+          expect(payload.data.results.map((item) => [item.index, item.ok])).toEqual([
+            [0, true],
+            [1, false],
+            [2, true],
+          ])
+          expect(requests.map((request) => (request.body as { objective: string }).objective)).toEqual([
+            "first",
+            "third",
+          ])
+        }),
+    ),
+  )
+
+  it.effect("artifact output writes compact summary and JSON artifact", () =>
+    withMockServer(
+      () => ({
+        body: {
+          search_id: "search_artifact",
+          results: [{ url: "https://example.com", title: "Example", excerpts: ["A".repeat(128)] }],
+        },
+      }),
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "parallel-cli-artifacts-")))
+          const result = yield* runCli(
+            ["search", "--output", "artifact", '{"objective":"artifact"}'],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+              PARALLEL_CLI_ARTIFACT_DIR: dir,
+            },
+          )
+          const payload = expectJson<{
+            data: {
+              kind: string
+              artifact: { absolute_path: string; size_bytes: number }
+            }
+          }>(result.stdout)
+          const artifactText = yield* Effect.promise(() =>
+            readFile(payload.data.artifact.absolute_path, "utf8"),
+          )
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.kind).toBe("summary+artifact")
+          expect(payload.data.artifact.size_bytes).toBeGreaterThan(0)
+          expect(JSON.parse(artifactText).search_id).toBe("search_artifact")
+        }),
+    ),
+  )
+
   it.effect("deep-research check reports in-progress tasks as structured data", () =>
     withMockServer(
       (request) => {
@@ -159,6 +294,84 @@ describe("parallel CLI", () => {
           expect(payload.data.completed).toBe(false)
           expect(payload.data.status).toBe("running")
           expect(payload.data.next_action).toBe("deep-research check")
+        }),
+    ),
+  )
+
+  it.effect("deep-research events parses provider SSE frames", () =>
+    withMockServer(
+      (request) => {
+        expect(request.method).toBe("GET")
+        expect(request.url).toBe("/v1/tasks/runs/run_1/events")
+        expect(request.headers["parallel-beta"]).toBe("events-sse-2025-07-24")
+        return {
+          contentType: "text/event-stream",
+          rawBody:
+            'event: message\ndata: {"type":"task_run.progress_msg.plan","message":"Planning","timestamp":"2026-04-24T00:00:00.000Z"}\n\n',
+        }
+      },
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(["deep-research", "events", '{"run_id":"run_1"}'], {
+            PARALLEL_API_KEY: "test-key",
+            PARALLEL_API_BASE_URL: baseUrl,
+          })
+          const payload = expectJson<{
+            data: { run_id: string; event_count: number; events: ReadonlyArray<{ type: string }> }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.run_id).toBe("run_1")
+          expect(payload.data.event_count).toBe(1)
+          expect(payload.data.events[0]?.type).toBe("task_run.progress_msg.plan")
+        }),
+    ),
+  )
+
+  it.effect("deep-research start replays local idempotency receipts", () =>
+    withMockServer(
+      () => ({
+        body: {
+          run_id: "run_idem",
+          status: "queued",
+          is_active: true,
+          processor: "base",
+          interaction_id: "int_1",
+          created_at: "2026-04-24T00:00:00.000Z",
+          modified_at: "2026-04-24T00:00:01.000Z",
+        },
+      }),
+      (baseUrl, requests) =>
+        Effect.gen(function* () {
+          const stateDir = yield* Effect.promise(() =>
+            mkdtemp(join(tmpdir(), "parallel-cli-state-")),
+          )
+          const env = {
+            PARALLEL_API_KEY: "test-key",
+            PARALLEL_API_BASE_URL: baseUrl,
+            PARALLEL_CLI_STATE_DIR: stateDir,
+          }
+          const args = [
+            "deep-research",
+            "start",
+            "--idempotency-key",
+            "idem-1",
+            '{"input":"research"}',
+          ]
+          const first = yield* runCli(args, env)
+          const second = yield* runCli(args, env)
+          const firstPayload = expectJson<{ data: { idempotency: { status: string } } }>(
+            first.stdout,
+          )
+          const secondPayload = expectJson<{ data: { idempotency: { status: string } } }>(
+            second.stdout,
+          )
+
+          expect(first.exitCode).toBe(0)
+          expect(second.exitCode).toBe(0)
+          expect(requests.length).toBe(1)
+          expect(firstPayload.data.idempotency.status).toBe("stored")
+          expect(secondPayload.data.idempotency.status).toBe("replayed")
         }),
     ),
   )
@@ -234,6 +447,204 @@ describe("parallel CLI", () => {
     ),
   )
 
+  it.effect("findall cancel calls the provider cancel endpoint", () =>
+    withMockServer(
+      (request) => {
+        expect(request.method).toBe("POST")
+        expect(request.url).toBe("/v1beta/findall/runs/fa_1/cancel")
+        expect(request.headers["parallel-beta"]).toBe("findall-2025-09-15")
+        return { rawBody: "" }
+      },
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(["findall", "cancel", '{"findall_id":"fa_1"}'], {
+            PARALLEL_API_KEY: "test-key",
+            PARALLEL_API_BASE_URL: baseUrl,
+          })
+          const payload = expectJson<{ data: { findall_id: string; cancelled: boolean } }>(
+            result.stdout,
+          )
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.findall_id).toBe("fa_1")
+          expect(payload.data.cancelled).toBe(true)
+        }),
+    ),
+  )
+
+  it.effect("monitors events supports artifact output", () =>
+    withMockServer(
+      (request) => {
+        expect(request.method).toBe("GET")
+        expect(request.url).toBe("/v1alpha/monitors/mon_1/events?lookback_period=7d")
+        return {
+          body: {
+            events: [{ type: "completion", monitor_ts: "completed_2026-04-24T00:00:00Z" }],
+            has_more: false,
+          },
+        }
+      },
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const dir = yield* Effect.promise(() =>
+            mkdtemp(join(tmpdir(), "parallel-cli-monitor-artifacts-")),
+          )
+          const result = yield* runCli(
+            [
+              "monitors",
+              "events",
+              "--output",
+              "artifact",
+              '{"monitor_id":"mon_1","lookback_period":"7d"}',
+            ],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+              PARALLEL_CLI_ARTIFACT_DIR: dir,
+            },
+          )
+          const payload = expectJson<{ data: { kind: string; artifact: { absolute_path: string } } }>(
+            result.stdout,
+          )
+          const artifact = JSON.parse(
+            yield* Effect.promise(() => readFile(payload.data.artifact.absolute_path, "utf8")),
+          )
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.kind).toBe("summary+artifact")
+          expect(artifact.monitor_id).toBe("mon_1")
+          expect(artifact.event_count).toBe(1)
+        }),
+    ),
+  )
+
+  it.effect("monitors list accepts provider array responses", () =>
+    withMockServer(
+      (request) => {
+        expect(request.method).toBe("GET")
+        expect(request.url).toBe("/v1alpha/monitors")
+        return {
+          body: [
+            {
+              monitor_id: "mon_1",
+              query: "news",
+              status: "active",
+              frequency: "1d",
+              created_at: "2026-04-24T00:00:00.000Z",
+            },
+          ],
+        }
+      },
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(["monitors", "list"], {
+            PARALLEL_API_KEY: "test-key",
+            PARALLEL_API_BASE_URL: baseUrl,
+          })
+          const payload = expectJson<{
+            data: { monitor_count: number; monitors: ReadonlyArray<{ monitor_id: string }> }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.monitor_count).toBe(1)
+          expect(payload.data.monitors[0]?.monitor_id).toBe("mon_1")
+        }),
+    ),
+  )
+
+  it.effect("discovery and doctor commands return machine-readable envelopes", () =>
+    Effect.gen(function* () {
+      const capabilities = yield* runCli(["capabilities"], {
+        PARALLEL_API_KEY: undefined,
+      })
+      const schemaList = yield* runCli(["schema", "list"], {
+        PARALLEL_API_KEY: undefined,
+      })
+      const schemaShow = yield* runCli(["schema", "show", "parallel.search.input/v1"], {
+        PARALLEL_API_KEY: undefined,
+      })
+      const examples = yield* runCli(["examples", "show", "search"], {
+        PARALLEL_API_KEY: undefined,
+      })
+      const doctor = yield* runCli(["doctor"], {
+        PARALLEL_API_KEY: undefined,
+      })
+
+      expect(capabilities.exitCode).toBe(0)
+      expect(schemaList.exitCode).toBe(0)
+      expect(schemaShow.exitCode).toBe(0)
+      expect(examples.exitCode).toBe(0)
+      expect(doctor.exitCode).toBe(0)
+
+      expect(expectJson<{ data: { commands: ReadonlyArray<{ command: string }> } }>(
+        capabilities.stdout,
+      ).data.commands.some((command) => command.command === "deep-research start")).toBe(true)
+      expect(expectJson<{ data: { schemas: ReadonlyArray<{ schema_id: string }> } }>(
+        schemaList.stdout,
+      ).data.schemas.some((schema) => schema.schema_id === "parallel.search.input/v1")).toBe(true)
+      expect(expectJson<{ data: { command: string; json_schema: unknown } }>(
+        schemaShow.stdout,
+      ).data.command).toBe("search")
+      expect(expectJson<{ data: { examples: ReadonlyArray<unknown> } }>(
+        examples.stdout,
+      ).data.examples.length).toBeGreaterThan(0)
+      expect(expectJson<{ data: { checks: ReadonlyArray<{ name: string }> } }>(
+        doctor.stdout,
+      ).data.checks.some((check) => check.name === "api_key")).toBe(true)
+    }),
+  )
+
+  it.effect("provider API errors include recovery metadata and redact secrets", () =>
+    withMockServer(
+      () => ({
+        status: 429,
+        body: {
+          error: {
+            message: "rate limited",
+            api_key: "secret-key",
+          },
+        },
+      }),
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(["search", '{"objective":"docs"}'], {
+            PARALLEL_API_KEY: "test-key",
+            PARALLEL_API_BASE_URL: baseUrl,
+          })
+          const payload = expectJson<{
+            error: {
+              details: {
+                retryable: boolean
+                provider_request: { method: string; path: string; status: number }
+                body: { error: { api_key: string } }
+              }
+            }
+          }>(result.stderr)
+
+          expect(result.exitCode).toBe(1)
+          expect(payload.error.details.retryable).toBe(true)
+          expect(payload.error.details.provider_request).toEqual({
+            method: "POST",
+            path: "/v1beta/search",
+            status: 429,
+          })
+          expect(payload.error.details.body.error.api_key).toBe("[REDACTED]")
+        }),
+    ),
+  )
+
+  it.effect("help output is available without provider credentials", () =>
+    Effect.gen(function* () {
+      const rootHelp = yield* runCli(["--help"], { PARALLEL_API_KEY: undefined })
+      const searchHelp = yield* runCli(["search", "--help"], { PARALLEL_API_KEY: undefined })
+
+      expect(rootHelp.exitCode).toBe(0)
+      expect(searchHelp.exitCode).toBe(0)
+      expect(rootHelp.stdout).toContain("COMMANDS")
+      expect(searchHelp.stdout).toContain("--output")
+    }),
+  )
+
   it.effect("returns structured error for missing API key", () =>
     Effect.gen(function* () {
       const result = yield* runCli(["extract", '{"urls":["https://example.com"]}'], {
@@ -266,10 +677,11 @@ describe("toErrorDetails", () => {
       const details = toErrorDetails(error)
       expect(details.type).toBe("MissingApiKeyError")
       expect(details.message).toBe("PARALLEL_API_KEY is not configured")
-      expect(details.details).toEqual({
+      expect(details.details).toEqual(expect.objectContaining({
         env_var: "PARALLEL_API_KEY",
         hint: "Set your API key",
-      })
+        retryable: false,
+      }))
     }),
   )
 })

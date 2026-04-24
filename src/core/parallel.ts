@@ -1,11 +1,14 @@
 import { Effect, Schema } from "effect"
 
-import { requestJson } from "./api"
+import { requestJson, requestText } from "./api"
 import { CommandInputError } from "./errors"
+import { decodeUnknownJsonText } from "./json"
+import { parseServerSentEvents } from "./sse"
 
 export const BETA_HEADER = "parallel-beta"
 export const SEARCH_EXTRACT_BETA = "search-extract-2025-10-10"
 export const FINDALL_BETA = "findall-2025-09-15"
+export const TASK_EVENTS_BETA = "events-sse-2025-07-24"
 
 const JsonRecord = Schema.Record({ key: Schema.String, value: Schema.Unknown })
 const StringRecord = Schema.Record({ key: Schema.String, value: Schema.String })
@@ -75,6 +78,8 @@ export const DeepResearchInput = Schema.Struct({
   allowed_domains: OptionalStringArray,
   disallowed_domains: OptionalStringArray,
   previous_interaction_id: Schema.optional(Schema.String),
+  enable_events: Schema.optional(Schema.Boolean),
+  webhook_url: Schema.optional(Schema.String),
   max_wait_seconds: Schema.optional(Schema.Number),
   poll_interval_seconds: Schema.optional(Schema.Number),
 })
@@ -82,6 +87,19 @@ export const DeepResearchInput = Schema.Struct({
 export const DeepResearchCheckInput = Schema.Struct({
   run_id: Schema.String,
   timeout_seconds: Schema.optional(Schema.Number),
+})
+
+export const DeepResearchWaitInput = Schema.Struct({
+  run_id: Schema.String,
+  max_wait_seconds: Schema.optional(Schema.Number),
+  poll_interval_seconds: Schema.optional(Schema.Number),
+  timeout_seconds: Schema.optional(Schema.Number),
+})
+
+export const DeepResearchEventsInput = Schema.Struct({
+  run_id: Schema.String,
+  timeout_seconds: Schema.optional(Schema.Number),
+  last_event_id: Schema.optional(Schema.String),
 })
 
 const MatchCondition = Schema.Struct({
@@ -107,9 +125,25 @@ export const FindAllCheckInput = Schema.Struct({
   findall_id: Schema.String,
 })
 
+export const FindAllWaitInput = Schema.Struct({
+  findall_id: Schema.String,
+  max_wait_seconds: Schema.optional(Schema.Number),
+  poll_interval_seconds: Schema.optional(Schema.Number),
+})
+
+export const FindAllEventsInput = Schema.Struct({
+  findall_id: Schema.String,
+  timeout_seconds: Schema.optional(Schema.Number),
+  last_event_id: Schema.optional(Schema.String),
+})
+
+export const FindAllCancelInput = Schema.Struct({
+  findall_id: Schema.String,
+})
+
 export const MonitorCreateInput = Schema.Struct({
   query: Schema.String,
-  cadence: Schema.Literal("hourly", "daily", "weekly"),
+  cadence: Schema.Literal("hourly", "daily", "weekly", "every_two_weeks"),
   webhook_url: Schema.optional(Schema.String),
   metadata: Schema.optional(StringRecord),
 })
@@ -117,7 +151,21 @@ export const MonitorCreateInput = Schema.Struct({
 export const MonitorEventsInput = Schema.Struct({
   monitor_id: Schema.String,
   lookback: Schema.optional(Schema.String),
+  lookback_period: Schema.optional(Schema.String),
   event_group_id: Schema.optional(Schema.String),
+})
+
+export const MonitorIdInput = Schema.Struct({
+  monitor_id: Schema.String,
+})
+
+export const MonitorSimulateInput = Schema.Struct({
+  monitor_id: Schema.String,
+  event_type: Schema.optional(Schema.Literal(
+    "monitor.event.detected",
+    "monitor.execution.completed",
+    "monitor.execution.failed",
+  )),
 })
 
 const SearchResponse = Schema.Struct({
@@ -142,10 +190,7 @@ const ExtractResponse = Schema.Struct({
     excerpts: Schema.optional(Schema.Array(Schema.String)),
     full_content: Schema.optional(Schema.NullOr(Schema.String)),
   })),
-  errors: Schema.Array(Schema.Struct({
-    url: Schema.String,
-    error: Schema.String,
-  })),
+  errors: Schema.Array(JsonRecord),
   warnings: Schema.optional(Schema.Array(Warning)),
   usage: Schema.optional(Schema.Array(UsageItem)),
 })
@@ -238,8 +283,9 @@ const FindAllRunResult = Schema.Struct({
 const Monitor = Schema.Struct({
   monitor_id: Schema.String,
   query: Schema.String,
-  status: Schema.Literal("active", "paused", "cancelled"),
-  cadence: Schema.Literal("hourly", "daily", "weekly"),
+  status: Schema.String,
+  frequency: Schema.optional(Schema.String),
+  cadence: Schema.optional(Schema.String),
   metadata: Schema.optional(StringRecord),
   webhook: Schema.optional(Schema.Struct({
     url: Schema.String,
@@ -249,13 +295,7 @@ const Monitor = Schema.Struct({
   last_run_at: Schema.optional(Schema.String),
 })
 
-const MonitorEvent = Schema.Struct({
-  type: Schema.Literal("event", "change"),
-  event_group_id: Schema.optional(Schema.String),
-  output: Schema.String,
-  event_date: Schema.String,
-  source_urls: Schema.Array(Schema.String),
-})
+const MonitorEvent = JsonRecord
 
 const MonitorEventsResponse = Schema.Struct({
   events: Schema.Array(MonitorEvent),
@@ -266,6 +306,8 @@ const MonitorEventsResponse = Schema.Struct({
 const EventGroupResponse = Schema.Struct({
   events: Schema.Array(MonitorEvent),
 })
+
+const MonitorsResponse = Schema.Array(Monitor)
 
 export const ensurePositiveInteger = (field: string, value: number | undefined, fallback: number) =>
   Effect.gen(function* () {
@@ -327,6 +369,7 @@ export const createTaskRun = (input: typeof DeepResearchInput.Type, defaultOutpu
   requestJson({
     method: "POST",
     path: "/v1/tasks/runs",
+    ...(input.enable_events ? { headers: { [BETA_HEADER]: TASK_EVENTS_BETA } } : {}),
     body: {
       input: input.input,
       processor: input.processor?.trim() || "base",
@@ -346,6 +389,8 @@ export const createTaskRun = (input: typeof DeepResearchInput.Type, defaultOutpu
       ...(input.previous_interaction_id
         ? { previous_interaction_id: input.previous_interaction_id }
         : {}),
+      ...(input.enable_events === undefined ? {} : { enable_events: input.enable_events }),
+      ...(input.webhook_url ? { webhook: { url: input.webhook_url } } : {}),
     },
     responseSchema: TaskRun,
   })
@@ -364,6 +409,23 @@ export const getTaskResult = (runId: string, timeoutSeconds?: number) =>
     ...(timeoutSeconds === undefined ? {} : { query: { timeout: String(timeoutSeconds) } }),
     responseSchema: TaskRunResult,
   })
+
+export const getTaskRunEvents = (input: typeof DeepResearchEventsInput.Type) =>
+  requestText({
+    method: "GET",
+    path: `/v1/tasks/runs/${encodeURIComponent(input.run_id)}/events`,
+    headers: { [BETA_HEADER]: TASK_EVENTS_BETA },
+    query: {
+      ...(input.timeout_seconds === undefined ? {} : { timeout: String(input.timeout_seconds) }),
+      ...(input.last_event_id ? { last_event_id: input.last_event_id } : {}),
+    },
+  }).pipe(
+    Effect.map((text) => ({
+      run_id: input.run_id,
+      event_count: parseServerSentEvents(text).length,
+      events: parseServerSentEvents(text),
+    })),
+  )
 
 export const ingestFindAll = (objective: string) =>
   requestJson({
@@ -431,13 +493,61 @@ export const getFindAllResult = (findallId: string) =>
     responseSchema: FindAllRunResult,
   })
 
+export const getFindAllEvents = (input: typeof FindAllEventsInput.Type) =>
+  requestText({
+    method: "GET",
+    path: `/v1beta/findall/runs/${encodeURIComponent(input.findall_id)}/events`,
+    headers: { [BETA_HEADER]: FINDALL_BETA },
+    query: {
+      ...(input.timeout_seconds === undefined ? {} : { timeout: String(input.timeout_seconds) }),
+      ...(input.last_event_id ? { last_event_id: input.last_event_id } : {}),
+    },
+  }).pipe(
+    Effect.map((text) => ({
+      findall_id: input.findall_id,
+      event_count: parseServerSentEvents(text).length,
+      events: parseServerSentEvents(text),
+    })),
+  )
+
+export const cancelFindAllRun = (findallId: string) =>
+  requestText({
+    method: "POST",
+    path: `/v1beta/findall/runs/${encodeURIComponent(findallId)}/cancel`,
+    headers: { [BETA_HEADER]: FINDALL_BETA },
+  }).pipe(
+    Effect.flatMap((text) =>
+      text.trim().length === 0
+        ? Effect.succeed<unknown>({})
+        : decodeUnknownJsonText(text, "findall-cancel-response"),
+    ),
+    Effect.map((response) => ({
+      findall_id: findallId,
+      cancelled: true,
+      response,
+    })),
+  )
+
+const cadenceToFrequency = (cadence: typeof MonitorCreateInput.Type["cadence"]) => {
+  switch (cadence) {
+    case "hourly":
+      return "1h"
+    case "daily":
+      return "1d"
+    case "weekly":
+      return "1w"
+    case "every_two_weeks":
+      return "2w"
+  }
+}
+
 export const createMonitor = (input: typeof MonitorCreateInput.Type) =>
   requestJson({
     method: "POST",
     path: "/v1alpha/monitors",
     body: {
       query: input.query,
-      cadence: input.cadence,
+      frequency: cadenceToFrequency(input.cadence),
       ...(input.webhook_url
         ? { webhook: { url: input.webhook_url, event_types: ["monitor.event.detected"] } }
         : {}),
@@ -445,6 +555,50 @@ export const createMonitor = (input: typeof MonitorCreateInput.Type) =>
     },
     responseSchema: Monitor,
   })
+
+export const listMonitors = requestJson({
+  method: "GET",
+  path: "/v1alpha/monitors",
+  responseSchema: MonitorsResponse,
+}).pipe(
+  Effect.map((monitors) => ({
+    monitor_count: monitors.length,
+    monitors,
+  })),
+)
+
+export const getMonitor = (monitorId: string) =>
+  requestJson({
+    method: "GET",
+    path: `/v1alpha/monitors/${encodeURIComponent(monitorId)}`,
+    responseSchema: Monitor,
+  })
+
+export const deleteMonitor = (monitorId: string) =>
+  requestJson({
+    method: "DELETE",
+    path: `/v1alpha/monitors/${encodeURIComponent(monitorId)}`,
+    responseSchema: Monitor,
+  }).pipe(
+    Effect.map((monitor) => ({
+      monitor_id: monitorId,
+      cancelled: true,
+      monitor,
+    })),
+  )
+
+export const simulateMonitorEvent = (input: typeof MonitorSimulateInput.Type) =>
+  requestText({
+    method: "POST",
+    path: `/v1alpha/monitors/${encodeURIComponent(input.monitor_id)}/simulate_event`,
+    ...(input.event_type ? { query: { event_type: input.event_type } } : {}),
+  }).pipe(
+    Effect.map(() => ({
+      monitor_id: input.monitor_id,
+      simulated: true,
+      event_type: input.event_type ?? "monitor.event.detected",
+    })),
+  )
 
 export const listMonitorEvents = (input: typeof MonitorEventsInput.Type) =>
   input.event_group_id
@@ -456,6 +610,8 @@ export const listMonitorEvents = (input: typeof MonitorEventsInput.Type) =>
     : requestJson({
         method: "GET",
         path: `/v1alpha/monitors/${encodeURIComponent(input.monitor_id)}/events`,
-        ...(input.lookback ? { query: { lookback: input.lookback } } : {}),
+        ...(input.lookback || input.lookback_period
+          ? { query: { lookback_period: input.lookback_period ?? input.lookback } }
+          : {}),
         responseSchema: MonitorEventsResponse,
       })

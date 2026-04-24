@@ -7,6 +7,12 @@ import { Effect, Layer } from "effect"
 
 import { authCommand } from "./commands/auth"
 import {
+  capabilitiesCommand,
+  doctorCommand,
+  examplesCommand,
+  schemaCommand,
+} from "./commands/discovery"
+import {
   deepResearchCommand,
   extractCommand,
   findAllCommand,
@@ -21,6 +27,10 @@ export const rootCommand = Command.make(CLI_NAME).pipe(
   Command.withDescription("JSON-first Parallel API CLI powered by Effect"),
   Command.withSubcommands([
     authCommand,
+    doctorCommand,
+    capabilitiesCommand,
+    schemaCommand,
+    examplesCommand,
     searchCommand,
     extractCommand,
     deepResearchCommand,
