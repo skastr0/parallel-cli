@@ -1,9 +1,10 @@
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
-import { dirname, isAbsolute, join } from "node:path"
+import { dirname, join } from "node:path"
 
 import { IdempotencyConflictError, JsonInputError } from "./errors"
+import { getStateDir } from "./runtime-paths"
 
 interface IdempotencyReceipt {
   readonly key: string
@@ -12,12 +13,6 @@ interface IdempotencyReceipt {
   readonly created_at: string
   readonly response: unknown
 }
-
-const getStateDir = () =>
-  Bun.env.PARALLEL_CLI_STATE_DIR ??
-  join(Bun.env.HOME ?? process.cwd(), ".parallel-cli", "state")
-
-const resolvePath = (path: string) => (isAbsolute(path) ? path : join(process.cwd(), path))
 
 const stableJson = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -38,7 +33,7 @@ const hashText = (text: string) => createHash("sha256").update(text).digest("hex
 
 const receiptPath = (key: string) => {
   const digest = hashText(key)
-  return resolvePath(join(getStateDir(), "idempotency", `${digest}.json`))
+  return join(getStateDir(), "idempotency", `${digest}.json`)
 }
 
 const readReceipt = (key: string) =>

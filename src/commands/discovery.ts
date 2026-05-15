@@ -1,8 +1,7 @@
 import { Args, Command } from "@effect/cli"
 import { Effect } from "effect"
 
-import { getArtifactDir } from "../core/artifacts"
-import { getAuthStatus } from "../core/api"
+import { getAuthStatus, type AuthStatus } from "../core/api"
 import {
   commandSpecs,
   listCapabilities,
@@ -12,7 +11,14 @@ import {
   showSchemaSpec,
 } from "../core/discovery"
 import { CommandInputError } from "../core/errors"
-import { idempotencyStateDir } from "../core/idempotency"
+import {
+  ARTIFACT_DIR_ENV,
+  CLI_HOME_ENV,
+  getArtifactDir,
+  getCliHome,
+  getStateDir,
+  STATE_DIR_ENV,
+} from "../core/runtime-paths"
 import { executeJsonCommand } from "../core/output"
 
 const schemaIdArg = Args.text({ name: "schema_id" }).pipe(
@@ -81,52 +87,85 @@ export const examplesCommand = Command.make("examples").pipe(
   Command.withSubcommands([examplesListCommand, examplesShowCommand]),
 )
 
-export const doctorCommand = Command.make("doctor", {}, () =>
-  executeJsonCommand(
-    "doctor",
-    Effect.gen(function* () {
-      const auth = yield* getAuthStatus
+interface DoctorCheck {
+  readonly name: string
+  readonly ok: boolean
+  readonly retryable: boolean
+  readonly details: Record<string, unknown>
+}
 
-      return {
-        ok: true,
-        checks: [
-          {
-            name: "api_key",
-            ok: auth.configured,
-            retryable: false,
-            details: auth.configured
-              ? { env_var: "PARALLEL_API_KEY" }
-              : {
-                  env_var: "PARALLEL_API_KEY",
-                  hint: "Export PARALLEL_API_KEY before running provider commands.",
-                },
-          },
-          {
-            name: "api_base_url",
-            ok: true,
-            retryable: false,
-            details: { api_base_url: auth.api_base_url },
-          },
-          {
-            name: "artifact_dir",
-            ok: true,
-            retryable: false,
-            details: { path: getArtifactDir() },
-          },
-          {
-            name: "state_dir",
-            ok: true,
-            retryable: false,
-            details: { path: idempotencyStateDir() },
-          },
-          {
-            name: "discovery",
-            ok: true,
-            retryable: false,
-            details: { command_count: commandSpecs.length },
-          },
-        ],
-      }
-    }),
-  ),
+const authChecks = (auth: AuthStatus): ReadonlyArray<DoctorCheck> => [
+  {
+    name: "api_key",
+    ok: auth.configured,
+    retryable: false,
+    details: auth.configured
+      ? { env_var: "PARALLEL_API_KEY" }
+      : {
+          env_var: "PARALLEL_API_KEY",
+          hint: "Export PARALLEL_API_KEY before running provider commands.",
+        },
+  },
+  {
+    name: "api_base_url",
+    ok: true,
+    retryable: false,
+    details: { api_base_url: auth.api_base_url },
+  },
+]
+
+const runtimePathChecks = (): ReadonlyArray<DoctorCheck> => [
+  {
+    name: "cli_home",
+    ok: true,
+    retryable: false,
+    details: {
+      path: getCliHome(),
+      env_var: CLI_HOME_ENV,
+    },
+  },
+  {
+    name: "artifact_dir",
+    ok: true,
+    retryable: false,
+    details: {
+      path: getArtifactDir(),
+      env_var: ARTIFACT_DIR_ENV,
+      fallback_env_var: CLI_HOME_ENV,
+    },
+  },
+  {
+    name: "state_dir",
+    ok: true,
+    retryable: false,
+    details: {
+      path: getStateDir(),
+      env_var: STATE_DIR_ENV,
+      fallback_env_var: CLI_HOME_ENV,
+    },
+  },
+]
+
+const discoveryCheck = (): DoctorCheck => ({
+  name: "discovery",
+  ok: true,
+  retryable: false,
+  details: { command_count: commandSpecs.length },
+})
+
+const getDoctorReport = Effect.gen(function* () {
+  const auth = yield* getAuthStatus
+
+  return {
+    ok: true,
+    checks: [
+      ...authChecks(auth),
+      ...runtimePathChecks(),
+      discoveryCheck(),
+    ],
+  }
+})
+
+export const doctorCommand = Command.make("doctor", {}, () =>
+  executeJsonCommand("doctor", getDoctorReport),
 ).pipe(Command.withDescription("Check local CLI configuration and discovery metadata"))

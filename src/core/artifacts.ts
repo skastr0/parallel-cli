@@ -1,9 +1,10 @@
 import { Effect, Schema } from "effect"
 import { mkdir, stat, writeFile } from "node:fs/promises"
 import { createHash } from "node:crypto"
-import { isAbsolute, join, relative } from "node:path"
+import { join, relative } from "node:path"
 
 import { ArtifactWriteError } from "./errors"
+import { getArtifactDir } from "./runtime-paths"
 
 export const OutputPolicy = Schema.Literal("inline", "artifact", "auto")
 export type OutputPolicy = typeof OutputPolicy.Type
@@ -27,18 +28,14 @@ const sanitizeSegment = (value: string) =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 80) || "artifact"
 
-export const getArtifactDir = () =>
-  Bun.env.PARALLEL_CLI_ARTIFACT_DIR ?? join(process.cwd(), ".parallel-cli", "artifacts")
-
-const resolvePath = (path: string) => (isAbsolute(path) ? path : join(process.cwd(), path))
-
 export const writeJsonArtifact = (command: string, data: unknown) =>
   Effect.gen(function* () {
     const createdAt = new Date().toISOString()
     const commandSegment = sanitizeSegment(command)
     const text = `${JSON.stringify(data, null, 2)}\n`
     const digest = createHash("sha256").update(text).digest("hex").slice(0, 12)
-    const dir = resolvePath(join(getArtifactDir(), commandSegment))
+    const artifactRoot = getArtifactDir()
+    const dir = join(artifactRoot, commandSegment)
     const fileName = `${createdAt.replace(/[:.]/g, "-")}-${digest}.json`
     const absolutePath = join(dir, fileName)
 
@@ -74,7 +71,7 @@ export const writeJsonArtifact = (command: string, data: unknown) =>
       label: `${command} JSON artifact`,
       kind: "json",
       absolute_path: absolutePath,
-      relative_path: relative(process.cwd(), absolutePath),
+      relative_path: relative(artifactRoot, absolutePath),
       size_bytes: fileStat.size,
       created_at: createdAt,
     } satisfies ArtifactRecord

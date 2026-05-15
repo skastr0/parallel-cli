@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause"
 import { Effect } from "effect"
 
 import { applyOutputPolicy, type OutputPolicy } from "./artifacts"
+import { ARTIFACT_DIR_ENV, CLI_HOME_ENV } from "./runtime-paths"
 
 interface SuccessEnvelope {
   readonly ok: true
@@ -132,7 +133,7 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           message: error.message,
           details: {
             path: error.path as string,
-            hint: "Check artifact directory permissions or set PARALLEL_CLI_ARTIFACT_DIR.",
+            hint: `Check artifact directory permissions or set ${ARTIFACT_DIR_ENV} / ${CLI_HOME_ENV}.`,
             retryable: true,
           },
         }

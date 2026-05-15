@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
-import { join } from "node:path"
+import { join, relative } from "node:path"
 import { tmpdir } from "node:os"
 
 import { MissingApiKeyError } from "../src/core/errors"
@@ -261,6 +261,43 @@ describe("parallel CLI", () => {
     ),
   )
 
+  it.effect("artifact output defaults to PARALLEL_CLI_HOME outside the project tree", () =>
+    withMockServer(
+      () => ({
+        body: {
+          search_id: "search_home_artifact",
+          results: [{ url: "https://example.com", title: "Example", excerpts: ["A"] }],
+        },
+      }),
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const cliHome = yield* Effect.promise(() =>
+            mkdtemp(join(tmpdir(), "parallel-cli-home-")),
+          )
+          const result = yield* runCli(
+            ["search", "--output", "artifact", '{"objective":"artifact-home"}'],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+              PARALLEL_CLI_HOME: cliHome,
+              PARALLEL_CLI_ARTIFACT_DIR: undefined,
+            },
+          )
+          const payload = expectJson<{
+            data: {
+              artifact: { absolute_path: string; relative_path: string }
+            }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.artifact.absolute_path.startsWith(join(cliHome, "artifacts"))).toBe(true)
+          expect(payload.data.artifact.relative_path).toBe(
+            relative(join(cliHome, "artifacts"), payload.data.artifact.absolute_path),
+          )
+        }),
+    ),
+  )
+
   it.effect("deep-research check reports in-progress tasks as structured data", () =>
     withMockServer(
       (request) => {
@@ -372,6 +409,49 @@ describe("parallel CLI", () => {
           expect(requests.length).toBe(1)
           expect(firstPayload.data.idempotency.status).toBe("stored")
           expect(secondPayload.data.idempotency.status).toBe("replayed")
+        }),
+    ),
+  )
+
+  it.effect("idempotency receipts default to PARALLEL_CLI_HOME state", () =>
+    withMockServer(
+      () => ({
+        body: {
+          run_id: "run_home_idem",
+          status: "queued",
+          is_active: true,
+          processor: "base",
+          interaction_id: "int_1",
+          created_at: "2026-04-24T00:00:00.000Z",
+          modified_at: "2026-04-24T00:00:01.000Z",
+        },
+      }),
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const cliHome = yield* Effect.promise(() =>
+            mkdtemp(join(tmpdir(), "parallel-cli-home-")),
+          )
+          const result = yield* runCli(
+            [
+              "deep-research",
+              "start",
+              "--idempotency-key",
+              "idem-home",
+              '{"input":"research"}',
+            ],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+              PARALLEL_CLI_HOME: cliHome,
+              PARALLEL_CLI_STATE_DIR: undefined,
+            },
+          )
+          const receiptRoot = join(cliHome, "state", "idempotency")
+
+          expect(result.exitCode).toBe(0)
+          const receiptEntries = yield* Effect.promise(() => readdir(receiptRoot))
+          expect(receiptEntries.length).toBe(1)
+          expect(receiptEntries[0]?.endsWith(".json")).toBe(true)
         }),
     ),
   )
@@ -566,8 +646,14 @@ describe("parallel CLI", () => {
       const examples = yield* runCli(["examples", "show", "search"], {
         PARALLEL_API_KEY: undefined,
       })
+      const cliHome = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), "parallel-cli-home-")),
+      )
       const doctor = yield* runCli(["doctor"], {
         PARALLEL_API_KEY: undefined,
+        PARALLEL_CLI_HOME: cliHome,
+        PARALLEL_CLI_ARTIFACT_DIR: undefined,
+        PARALLEL_CLI_STATE_DIR: undefined,
       })
 
       expect(capabilities.exitCode).toBe(0)
@@ -588,9 +674,13 @@ describe("parallel CLI", () => {
       expect(expectJson<{ data: { examples: ReadonlyArray<unknown> } }>(
         examples.stdout,
       ).data.examples.length).toBeGreaterThan(0)
-      expect(expectJson<{ data: { checks: ReadonlyArray<{ name: string }> } }>(
+      const doctorPayload = expectJson<{ data: { checks: ReadonlyArray<{ name: string; details: { path?: string } }> } }>(
         doctor.stdout,
-      ).data.checks.some((check) => check.name === "api_key")).toBe(true)
+      )
+      expect(doctorPayload.data.checks.some((check) => check.name === "api_key")).toBe(true)
+      expect(doctorPayload.data.checks.find((check) => check.name === "cli_home")?.details.path).toBe(cliHome)
+      expect(doctorPayload.data.checks.find((check) => check.name === "artifact_dir")?.details.path).toBe(join(cliHome, "artifacts"))
+      expect(doctorPayload.data.checks.find((check) => check.name === "state_dir")?.details.path).toBe(join(cliHome, "state"))
     }),
   )
 

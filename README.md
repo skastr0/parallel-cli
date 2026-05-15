@@ -159,7 +159,7 @@ Large response commands support:
 
 `artifact` writes the full JSON data to disk and returns a compact summary with an artifact record. `auto` writes an artifact when the response is larger than the CLI threshold.
 
-Set `PARALLEL_CLI_ARTIFACT_DIR` to control artifact location. The default is `.parallel-cli/artifacts` under the current working directory.
+Artifacts are CLI runtime data. By default they are stored under `~/.config/parallel-cli/artifacts`, or under `PARALLEL_CLI_HOME/artifacts` when `PARALLEL_CLI_HOME` is set. Set `PARALLEL_CLI_ARTIFACT_DIR` only when you want an explicit artifact output path.
 
 ## Idempotency
 
@@ -167,7 +167,7 @@ Mutation and job-submission commands accept `--idempotency-key`.
 
 Parallel does not currently document a provider idempotency header for these endpoints, so this CLI implements local success receipts. After a successful submission, repeating the same command and payload with the same key replays the stored response on the same machine. If the provider request times out before the receipt is written, the CLI cannot guarantee provider-level idempotency.
 
-Set `PARALLEL_CLI_STATE_DIR` to control receipt storage. The default is `~/.parallel-cli/state`.
+Receipts are CLI runtime data. By default they are stored under `~/.config/parallel-cli/state`, or under `PARALLEL_CLI_HOME/state` when `PARALLEL_CLI_HOME` is set. Set `PARALLEL_CLI_STATE_DIR` only when you want an explicit receipt storage path.
 
 ## Envelopes
 
@@ -211,8 +211,9 @@ Error details include recovery hints, retryability, provider request metadata, a
 | --- | --- | --- | --- |
 | `PARALLEL_API_KEY` | Yes | - | Parallel API key |
 | `PARALLEL_API_BASE_URL` | No | `https://api.parallel.ai` | Override API base URL for tests or proxies |
-| `PARALLEL_CLI_ARTIFACT_DIR` | No | `.parallel-cli/artifacts` | Artifact output directory |
-| `PARALLEL_CLI_STATE_DIR` | No | `~/.parallel-cli/state` | Local idempotency receipt directory |
+| `PARALLEL_CLI_HOME` | No | `~/.config/parallel-cli` | Root directory for CLI-owned runtime data |
+| `PARALLEL_CLI_ARTIFACT_DIR` | No | `$PARALLEL_CLI_HOME/artifacts` | Explicit artifact output directory |
+| `PARALLEL_CLI_STATE_DIR` | No | `$PARALLEL_CLI_HOME/state` | Explicit local idempotency receipt directory |
 
 ## Development
 
