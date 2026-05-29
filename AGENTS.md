@@ -27,6 +27,7 @@ Use:
 bun run typecheck
 bun run test
 bun run build
+bun run package:release
 ```
 
 Use `PARALLEL_API_BASE_URL` for mock servers in tests. Do not hit the live Parallel API from unit tests.

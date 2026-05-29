@@ -2,6 +2,16 @@
 
 JSON-first Effect CLI for Parallel API operations.
 
+## Status
+
+- Maturity: experimental
+- Repository visibility: private until explicit maintainer approval
+- Primary release lane: GitHub Release archives with standalone Bun-compiled binaries
+- Package registry lane: deferred; npm is intentionally disabled until a real `bin` wrapper or platform-package layout exists
+- Maintainer model: solo-maintained
+
+The first public release is prepared for review but not published yet. Real publishing, tag pushes, GitHub release creation, Homebrew tap changes, package registry publication, and repository visibility changes require explicit maintainer approval.
+
 The CLI is designed as a stable agent protocol surface:
 
 - commands accept one JSON argument: inline JSON, `@file`, `-`, or `@-`
@@ -9,12 +19,23 @@ The CLI is designed as a stable agent protocol surface:
 - command payloads use `snake_case` keys to mirror Parallel API payloads
 - execution controls use flags such as `--output`, `--concurrency`, and `--idempotency-key`
 
-## Quick Start
+## Install Surface
+
+After a GitHub Release exists, download the archive for your platform, verify `SHA256SUMS`, and install the `parallel` executable somewhere on your `PATH`:
+
+```bash
+tar -xzf parallel-cli-v0.1.0-darwin-arm64.tar.gz
+install -m 0755 parallel-cli-v0.1.0-darwin-arm64/parallel ~/.local/bin/parallel
+```
+
+For source builds before the first release:
 
 ```bash
 export PARALLEL_API_KEY="..."
 bun install
-bun run dev -- doctor
+bun run build
+bun run install:local
+parallel doctor
 ```
 
 All examples below prefer file payloads:
@@ -222,6 +243,42 @@ bun install
 bun run typecheck
 bun run test
 bun run build
+bun run package:release
 ```
 
-The build emits cross-platform binaries under `dist/`.
+`bun run verify` runs typechecking, tests, and a full cross-platform build. `bun run package:release` expects the build outputs and writes release archives plus `SHA256SUMS` under `dist/release/`.
+
+The build emits cross-platform binaries under `dist/`:
+
+- `parallel-darwin-arm64`
+- `parallel-darwin-x64`
+- `parallel-linux-arm64`
+- `parallel-linux-x64`
+
+## Release Plan
+
+The intended release lane is GitHub Releases first:
+
+1. Keep the repository private until public-readiness scans and maintainer approval are complete.
+2. Build and package standalone binary archives with `bun run verify:release`.
+3. Create a draft GitHub Release with the `dist/release/*.tar.gz` assets and `dist/release/SHA256SUMS`.
+4. Prefer Homebrew only after the first GitHub Release asset shape is stable.
+5. Defer npm until the project has a real `bin` package surface or a per-platform package layout.
+6. Flip repository visibility only after the maintainer explicitly approves the public repository state.
+
+The project is not released until the maintainer explicitly approves the real tag, GitHub Release, Homebrew tap, package registry, and visibility actions.
+
+## Known Limitations
+
+- The CLI stores local artifact and idempotency receipt data on the user's machine; it does not synchronize that state across machines.
+- Local idempotency receipts cannot guarantee provider-level idempotency if a provider request succeeds but the local receipt write fails.
+- `deep-research cancel` and `monitors wait` intentionally report unsupported provider capabilities where the public Parallel API does not document the needed endpoint.
+- npm installation is intentionally deferred for now.
+
+## Support And Security
+
+Use GitHub issues for reproducible bugs and scoped proposals once the repository is public. Please do not open public issues for suspected vulnerabilities; follow `SECURITY.md` instead.
+
+## License
+
+MIT

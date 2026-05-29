@@ -6,14 +6,14 @@ import { join } from "path";
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const version = packageJson.version;
 const distDir = "dist";
-const binaryName = "parallel-cli";
+const binaryName = "parallel";
 
 const targets = [
-  { platform: "darwin", arch: "x64" },
-  { platform: "darwin", arch: "arm64" },
-  { platform: "linux", arch: "x64" },
-  { platform: "linux", arch: "arm64" },
-];
+  { platform: "darwin", arch: "x64", compileTarget: "bun-darwin-x64" },
+  { platform: "darwin", arch: "arm64", compileTarget: "bun-darwin-arm64" },
+  { platform: "linux", arch: "x64", compileTarget: "bun-linux-x64" },
+  { platform: "linux", arch: "arm64", compileTarget: "bun-linux-arm64" },
+] as const;
 
 console.log("Cleaning dist directory...");
 rmSync(distDir, { recursive: true, force: true });
@@ -21,16 +21,19 @@ mkdirSync(distDir, { recursive: true });
 
 console.log(`\nBuilding ${binaryName} v${version}...\n`);
 
-for (const { platform, arch } of targets) {
-  const outfile = join(distDir, `${binaryName}-${platform}-${arch}`);
+const failures: string[] = [];
 
-  console.log(`Building ${platform}-${arch}...`);
+for (const { platform, arch, compileTarget } of targets) {
+  const outfile = join(distDir, `${binaryName}-${platform}-${arch}`);
+  const targetName = `${platform}-${arch}`;
+
+  console.log(`Building ${targetName}...`);
 
   try {
     const buildResult = await Bun.build({
       target: "bun",
       compile: {
-        target: `bun-${platform}-${arch}`,
+        target: compileTarget,
         outfile,
       },
       entrypoints: ["src/cli.ts"],
@@ -41,7 +44,8 @@ for (const { platform, arch } of targets) {
     });
 
     if (!buildResult.success) {
-      console.error(`  ✗ Failed to build ${platform}-${arch}`);
+      failures.push(targetName);
+      console.error(`  ✗ Failed to build ${targetName}`);
       for (const log of buildResult.logs) {
         console.error(log);
       }
@@ -51,8 +55,14 @@ for (const { platform, arch } of targets) {
     await Bun.$`chmod +x ${outfile}`;
     console.log(`  ✓ ${outfile}`);
   } catch (error) {
-    console.error(`  ✗ Error building ${platform}-${arch}:`, error);
+    failures.push(targetName);
+    console.error(`  ✗ Error building ${targetName}:`, error);
   }
+}
+
+if (failures.length > 0) {
+  console.error(`\nBuild failed for: ${failures.join(", ")}`);
+  process.exit(1);
 }
 
 console.log(`

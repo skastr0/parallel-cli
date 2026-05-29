@@ -6,7 +6,7 @@ import { join } from "path";
 
 const packageJson = JSON.parse(await Bun.file("package.json").text());
 const version = packageJson.version;
-const binaryName = "parallel-cli";
+const binaryName = "parallel";
 const distDir = "dist";
 
 const platform = process.platform;
