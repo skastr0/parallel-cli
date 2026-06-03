@@ -5,9 +5,9 @@ JSON-first Effect CLI for Parallel API operations.
 ## Status
 
 - Maturity: experimental
-- Repository visibility: private until explicit maintainer approval
-- Primary release lane: GitHub Release archives with standalone Bun-compiled binaries
-- Package registry lane: deferred; npm is intentionally disabled until a real `bin` wrapper or platform-package layout exists
+- Repository visibility: prepared for public release after explicit maintainer approval
+- Primary release lane: npm package with a Node launcher and per-platform optional binary packages
+- Secondary release lane: GitHub Release archives with standalone Bun-compiled binaries
 - Maintainer model: solo-maintained
 
 The first public release is prepared for review but not published yet. Real publishing, tag pushes, GitHub release creation, Homebrew tap changes, package registry publication, and repository visibility changes require explicit maintainer approval.
@@ -21,11 +21,19 @@ The CLI is designed as a stable agent protocol surface:
 
 ## Install Surface
 
-After a GitHub Release exists, download the archive for your platform, verify `SHA256SUMS`, and install the `parallel` executable somewhere on your `PATH`:
+After the npm release exists, install or run the CLI from the npm package:
 
 ```bash
-tar -xzf parallel-cli-v0.1.0-darwin-arm64.tar.gz
-install -m 0755 parallel-cli-v0.1.0-darwin-arm64/parallel ~/.local/bin/parallel
+npm install -g @skastr0/parallel-cli
+parallel doctor
+```
+
+The package exposes the `parallel` command through a Node launcher and installs the matching platform binary as an optional dependency. Ephemeral runners can use the package directly:
+
+```bash
+npx -y --package @skastr0/parallel-cli parallel doctor
+bunx -p @skastr0/parallel-cli parallel doctor
+pnpm --package @skastr0/parallel-cli dlx parallel doctor
 ```
 
 For source builds before the first release:
@@ -244,6 +252,8 @@ bun run typecheck
 bun run test
 bun run build
 bun run package:release
+bun run package:npm
+bun run npm:dry-run
 ```
 
 `bun run verify` runs typechecking, tests, and a full cross-platform build. `bun run package:release` expects the build outputs and writes release archives plus `SHA256SUMS` under `dist/release/`.
@@ -255,25 +265,38 @@ The build emits cross-platform binaries under `dist/`:
 - `parallel-linux-arm64`
 - `parallel-linux-x64`
 
+`bun run package:npm` expects those binaries and writes npm publish packages under `dist/npm/`:
+
+- `@skastr0/parallel-cli-darwin-x64`
+- `@skastr0/parallel-cli-darwin-arm64`
+- `@skastr0/parallel-cli-linux-x64`
+- `@skastr0/parallel-cli-linux-arm64`
+- `@skastr0/parallel-cli`
+
+`bun run npm:dry-run` inspects the generated npm package contents with `npm pack --dry-run`.
+
 ## Release Plan
 
-The intended release lane is GitHub Releases first:
+The intended first release lane is npm trusted publishing through GitHub Actions:
 
-1. Keep the repository private until public-readiness scans and maintainer approval are complete.
-2. Build and package standalone binary archives with `bun run verify:release`.
-3. Create a draft GitHub Release with the `dist/release/*.tar.gz` assets and `dist/release/SHA256SUMS`.
-4. Prefer Homebrew only after the first GitHub Release asset shape is stable.
-5. Defer npm until the project has a real `bin` package surface or a per-platform package layout.
-6. Flip repository visibility only after the maintainer explicitly approves the public repository state.
+1. Keep external mutations gated until public-readiness scans and maintainer approval are complete.
+2. Build and package standalone binaries with `bun run build`.
+3. Generate npm wrapper and platform packages with `bun run package:npm`.
+4. Inspect package contents with `bun run npm:dry-run`.
+5. Configure npm trusted publishing for `.github/workflows/npm-publish.yml` and the protected GitHub `release` environment.
+6. Make the repository public before publishing if npm provenance is required.
+7. Push the approved release tag or dispatch the workflow only after explicit maintainer approval.
+8. Let CI publish the platform packages first and the main wrapper package last.
+9. Verify `npx`, `bunx`, `pnpm dlx`, package metadata, and npm provenance after publication.
 
-The project is not released until the maintainer explicitly approves the real tag, GitHub Release, Homebrew tap, package registry, and visibility actions.
+The project is not released until the maintainer explicitly approves the real tag, GitHub Release, Homebrew tap, package registry, and visibility actions. Local `npm publish` is intentionally guarded and is only a bootstrap exception for an exact package/version after explicit approval.
 
 ## Known Limitations
 
 - The CLI stores local artifact and idempotency receipt data on the user's machine; it does not synchronize that state across machines.
 - Local idempotency receipts cannot guarantee provider-level idempotency if a provider request succeeds but the local receipt write fails.
 - `deep-research cancel` and `monitors wait` intentionally report unsupported provider capabilities where the public Parallel API does not document the needed endpoint.
-- npm installation is intentionally deferred for now.
+- npm installation depends on the generated platform package for the user's operating system and CPU architecture.
 
 ## Support And Security
 

@@ -2,7 +2,7 @@
 
 ## Project Intent
 
-This is a JSON-first Effect CLI for Parallel API operations. It replaces the old OpenCode-local `parallel-tools` provider wrapper with a generic command-line interface that agents can call outside any harness.
+This is a JSON-first Effect CLI for Parallel API operations. It provides a generic command-line interface that agents can call outside any specific harness.
 
 ## Interface Rules
 
@@ -28,6 +28,8 @@ bun run typecheck
 bun run test
 bun run build
 bun run package:release
+bun run package:npm
+bun run npm:dry-run
 ```
 
 Use `PARALLEL_API_BASE_URL` for mock servers in tests. Do not hit the live Parallel API from unit tests.
