@@ -9,11 +9,14 @@
     "dev": "bun run ./src/cli.ts",
     "build": "bun scripts/build.ts",
     "package:release": "bun scripts/package-release.ts",
+    "package:npm": "bun scripts/package-npm.ts",
+    "npm:dry-run": "bun scripts/npm-pack-dry-run.ts",
+    "publish:npm:ci": "bun scripts/npm-publish-ci.ts",
     "install:local": "bun scripts/install.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify": "bun run typecheck && bun run test && bun run build",
-    "verify:release": "bun run verify && bun run package:release"
+    "verify:release": "bun run verify && bun run package:release && bun run package:npm && bun run npm:dry-run"
   },
   "keywords": [
     "parallel",
