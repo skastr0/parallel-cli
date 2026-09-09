@@ -13,7 +13,10 @@ import {
   ExtractInput,
   FindAllCancelInput,
   FindAllCheckInput,
+  FindAllEnrichInput,
+  FindAllEntitySearchInput,
   FindAllEventsInput,
+  FindAllExtendInput,
   FindAllStartInput,
   FindAllWaitInput,
   MonitorCreateInput,
@@ -28,7 +31,10 @@ import {
   createMonitor,
   createTaskRun,
   deleteMonitor,
+  enrichFindAllRun,
   ensurePositiveInteger,
+  entitySearch,
+  extendFindAllRun,
   extract,
   getFindAllEvents,
   getFindAllResult,
@@ -43,6 +49,7 @@ import {
   listMonitors,
   search,
   simulateMonitorEvent,
+  triggerMonitorRun,
 } from "../core/parallel"
 import { withIdempotency } from "../core/idempotency"
 
@@ -247,6 +254,8 @@ const normalizeFindAllRun = (findallId: string, run: FindAllRun) => ({
     check: "findall check",
     wait: "findall wait",
     events: "findall events",
+    enrich: "findall enrich",
+    extend: "findall extend",
     cancel: "findall cancel",
   },
 })
@@ -316,16 +325,21 @@ const waitForFindAllRun = (request: typeof FindAllWaitInput.Type) =>
 
 const normalizeMonitor = (monitor: {
   readonly monitor_id: string
-  readonly query: string
+  readonly type?: string | undefined
+  readonly query?: string | undefined
   readonly frequency?: string | undefined
   readonly cadence?: string | undefined
+  readonly processor?: string | undefined
   readonly status: string
   readonly webhook?: unknown | undefined
+  readonly settings?: { readonly query?: string | undefined } | undefined
 }) => ({
   monitor_id: monitor.monitor_id,
-  query: monitor.query,
+  type: monitor.type,
+  query: monitor.settings?.query ?? monitor.query,
   frequency: monitor.frequency,
   cadence: monitor.cadence,
+  processor: monitor.processor,
   status: monitor.status,
   webhook_configured: Boolean(monitor.webhook),
   lifecycle: {
@@ -345,6 +359,7 @@ const normalizeMonitor = (monitor: {
   next_actions: {
     inspect: "monitors inspect",
     events: "monitors events",
+    trigger: "monitors trigger",
     cancel: "monitors cancel",
   },
 })
@@ -371,6 +386,7 @@ export const searchCommand = Command.make(
             search(request).pipe(
               Effect.map((response) => ({
                 search_id: response.search_id,
+                session_id: response.session_id,
                 results: response.results,
                 result_count: response.results.length,
                 warnings: response.warnings,
@@ -402,6 +418,7 @@ export const extractCommand = Command.make(
             extract(request).pipe(
               Effect.map((response) => ({
                 extract_id: response.extract_id,
+                session_id: response.session_id,
                 results: response.results,
                 errors: response.errors,
                 result_count: response.results.length,
@@ -568,13 +585,23 @@ const findAllStart = Command.make(
                   ...created,
                   lifecycle: {
                     provider_async: true,
-                    supported_actions: ["check", "inspect", "wait", "events", "cancel"],
+                    supported_actions: [
+                      "check",
+                      "inspect",
+                      "wait",
+                      "events",
+                      "enrich",
+                      "extend",
+                      "cancel",
+                    ],
                   },
                   next_actions: {
                     inspect: "findall inspect",
                     check: "findall check",
                     wait: "findall wait",
                     events: "findall events",
+                    enrich: "findall enrich",
+                    extend: "findall extend",
                     cancel: "findall cancel",
                   },
                 })),
@@ -654,6 +681,78 @@ const findAllCancel = Command.make(
     ),
 ).pipe(Command.withDescription("Cancel a Parallel FindAll run"))
 
+const findAllEntitySearch = Command.make(
+  "entity-search",
+  { input: inputArg, output: outputOption, concurrency: concurrencyOption },
+  ({ input, output, concurrency }) =>
+    executeWithOutput(
+      "findall entity-search",
+      output,
+      Effect.gen(function* () {
+        const resolvedConcurrency = yield* ensurePositiveInteger("concurrency", concurrency, 5)
+        return yield* runJsonInputOrBatch(
+          input,
+          FindAllEntitySearchInput,
+          (request) =>
+            entitySearch(request).pipe(
+              Effect.map((response) => ({
+                entity_set_id: response.entity_set_id,
+                entities: response.entities,
+                entity_count: response.entities.length,
+              })),
+            ),
+          {
+            concurrency: resolvedConcurrency,
+            target: (request) => ({
+              entity_type: request.entity_type,
+              objective: request.objective,
+            }),
+          },
+        )
+      }),
+    ),
+).pipe(Command.withDescription("Run a synchronous FindAll entity search for people or companies"))
+
+const findAllEnrich = Command.make(
+  "enrich",
+  { input: inputArg, output: outputOption, idempotencyKey: idempotencyKeyOption },
+  ({ input, output, idempotencyKey }) =>
+    executeWithOutput(
+      "findall enrich",
+      output,
+      loadJsonInput(FindAllEnrichInput, input).pipe(
+        Effect.flatMap((request) =>
+          withIdempotency(
+            "findall enrich",
+            optionToUndefined(idempotencyKey),
+            request,
+            enrichFindAllRun(request),
+          ),
+        ),
+      ),
+    ),
+).pipe(Command.withDescription("Add a Task-powered enrichment to an existing FindAll run"))
+
+const findAllExtend = Command.make(
+  "extend",
+  { input: inputArg, output: outputOption, idempotencyKey: idempotencyKeyOption },
+  ({ input, output, idempotencyKey }) =>
+    executeWithOutput(
+      "findall extend",
+      output,
+      loadJsonInput(FindAllExtendInput, input).pipe(
+        Effect.flatMap((request) =>
+          withIdempotency(
+            "findall extend",
+            optionToUndefined(idempotencyKey),
+            request,
+            extendFindAllRun(request),
+          ),
+        ),
+      ),
+    ),
+).pipe(Command.withDescription("Increase the match limit of an existing FindAll run"))
+
 const monitorCreate = Command.make(
   "create",
   {
@@ -681,7 +780,11 @@ const monitorCreate = Command.make(
             ),
           {
             concurrency: resolvedConcurrency,
-            target: (request) => ({ query: request.query }),
+            target: (request) => ({
+              query: request.query,
+              task_run_id: request.task_run_id,
+              type: request.type,
+            }),
           },
         )
       }),
@@ -769,6 +872,25 @@ const monitorDelete = Command.make(
     ),
 ).pipe(Command.withDescription("Alias for monitors cancel"))
 
+const monitorTrigger = Command.make(
+  "trigger",
+  { input: inputArg, idempotencyKey: idempotencyKeyOption },
+  ({ input, idempotencyKey }) =>
+    executeJsonCommand(
+      "monitors trigger",
+      loadJsonInput(MonitorIdInput, input).pipe(
+        Effect.flatMap((request) =>
+          withIdempotency(
+            "monitors trigger",
+            optionToUndefined(idempotencyKey),
+            request,
+            triggerMonitorRun(request.monitor_id),
+          ),
+        ),
+      ),
+    ),
+).pipe(Command.withDescription("Enqueue a real off-schedule monitor run"))
+
 const monitorSimulate = Command.make(
   "simulate",
   { input: inputArg },
@@ -777,7 +899,7 @@ const monitorSimulate = Command.make(
       "monitors simulate",
       loadJsonInput(MonitorSimulateInput, input).pipe(Effect.flatMap(simulateMonitorEvent)),
     ),
-).pipe(Command.withDescription("Simulate a Parallel monitor webhook event"))
+).pipe(Command.withDescription("Alias for monitors trigger; V1 removed synthetic simulate_event"))
 
 const monitorWait = Command.make(
   "wait",
@@ -815,10 +937,13 @@ export const findAllCommand = Command.make("findall").pipe(
   Command.withDescription("Parallel FindAll entity discovery commands"),
   Command.withSubcommands([
     findAllStart,
+    findAllEntitySearch,
     findAllInspect,
     findAllCheck,
     findAllWait,
     findAllEvents,
+    findAllEnrich,
+    findAllExtend,
     findAllCancel,
   ]),
 )
@@ -830,6 +955,7 @@ export const monitorsCommand = Command.make("monitors").pipe(
     monitorList,
     monitorInspect,
     monitorEvents,
+    monitorTrigger,
     monitorWait,
     monitorCancel,
     monitorDelete,

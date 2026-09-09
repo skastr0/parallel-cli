@@ -8,7 +8,10 @@ import {
   ExtractInput,
   FindAllCancelInput,
   FindAllCheckInput,
+  FindAllEnrichInput,
+  FindAllEntitySearchInput,
   FindAllEventsInput,
+  FindAllExtendInput,
   FindAllStartInput,
   FindAllWaitInput,
   MonitorCreateInput,
@@ -80,8 +83,14 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     schema: SearchInput,
     examples: [
       {
-        name: "agentic search",
-        input: { objective: "Find official Parallel API docs", mode: "agentic", max_results: 5 },
+        name: "fast search",
+        input: {
+          objective: "Find official Parallel API docs",
+          search_queries: ["Parallel API documentation"],
+          mode: "fast",
+          max_results: 5,
+          session_id: "session_example",
+        },
       },
     ],
     capability: {
@@ -105,6 +114,8 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
           urls: ["https://parallel.ai"],
           objective: "Extract product names and API categories",
           full_content: true,
+          max_chars_total: 50000,
+          client_model: "grok-4",
         },
       },
     ],
@@ -222,18 +233,46 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     examples: [
       {
         name: "entity discovery",
-        input: { objective: "Find AI infrastructure startups founded after 2023" },
+        input: {
+          objective: "Find AI infrastructure startups founded after 2023",
+          generator: "core",
+          match_limit: 10,
+        },
         flags: { idempotency_key: "find-ai-infra-2026-04-24" },
       },
     ],
     capability: {
       command: "findall start",
       lifecycle: "provider_async",
-      supported_actions: ["start", "inspect", "check", "wait", "events", "cancel"],
+      supported_actions: ["start", "inspect", "check", "wait", "events", "cancel", "enrich", "extend"],
       unsupported_actions: [],
       supports_batch: true,
       supports_artifacts: true,
       idempotency: localIdempotency,
+    },
+  },
+  {
+    command: "findall entity-search",
+    schema_id: "parallel.findall.entity_search.input/v1",
+    description: "Run a synchronous ranked people or company search without per-candidate verification.",
+    schema: FindAllEntitySearchInput,
+    examples: [
+      {
+        name: "company search",
+        input: {
+          entity_type: "companies",
+          objective: "AI startups in San Francisco",
+          match_limit: 25,
+        },
+      },
+    ],
+    capability: {
+      command: "findall entity-search",
+      lifecycle: "synchronous",
+      supported_actions: ["run"],
+      unsupported_actions: syncUnsupported,
+      supports_batch: true,
+      supports_artifacts: true,
     },
   },
   {
@@ -297,6 +336,62 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     },
   },
   {
+    command: "findall enrich",
+    schema_id: "parallel.findall.enrich.input/v1",
+    description: "Add a Task-powered enrichment to an existing FindAll run.",
+    schema: FindAllEnrichInput,
+    examples: [
+      {
+        name: "ceo enrichment",
+        input: {
+          findall_id: "findall_...",
+          processor: "core",
+          output_schema: {
+            type: "json",
+            json_schema: {
+              type: "object",
+              properties: {
+                ceo_name: { type: "string", description: "Name of the current CEO" },
+              },
+              required: ["ceo_name"],
+              additionalProperties: false,
+            },
+          },
+        },
+      },
+    ],
+    capability: {
+      command: "findall enrich",
+      lifecycle: "provider_async",
+      supported_actions: ["start"],
+      unsupported_actions: [],
+      supports_batch: false,
+      supports_artifacts: true,
+      idempotency: localIdempotency,
+    },
+  },
+  {
+    command: "findall extend",
+    schema_id: "parallel.findall.extend.input/v1",
+    description: "Increase the match limit of an existing FindAll run.",
+    schema: FindAllExtendInput,
+    examples: [
+      {
+        name: "extend matches",
+        input: { findall_id: "findall_...", additional_match_limit: 10 },
+      },
+    ],
+    capability: {
+      command: "findall extend",
+      lifecycle: "provider_async",
+      supported_actions: ["start"],
+      unsupported_actions: [],
+      supports_batch: false,
+      supports_artifacts: true,
+      idempotency: localIdempotency,
+    },
+  },
+  {
     command: "monitors create",
     schema_id: "parallel.monitors.create.input/v1",
     description: "Create a scheduled web monitor.",
@@ -305,8 +400,10 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
       {
         name: "daily monitor",
         input: {
+          type: "event_stream",
           query: "Notable news about Parallel Web Systems",
-          cadence: "daily",
+          frequency: "1d",
+          processor: "lite",
         },
         flags: { idempotency_key: "parallel-news-monitor" },
       },
@@ -314,7 +411,7 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     capability: {
       command: "monitors create",
       lifecycle: "scheduled_monitor",
-      supported_actions: ["start", "inspect", "events", "cancel"],
+      supported_actions: ["start", "inspect", "events", "trigger", "cancel"],
       unsupported_actions: [
         {
           action: "wait",
@@ -323,6 +420,10 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
         {
           action: "stream",
           reason: "Monitor API documents webhooks and event history, not an SSE stream.",
+        },
+        {
+          action: "simulate",
+          reason: "Monitor V1 removed simulate_event; use monitors trigger for a real off-schedule run.",
         },
       ],
       supports_batch: true,
@@ -335,7 +436,7 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     schema_id: "parallel.monitors.events.input/v1",
     description: "List monitor events or retrieve an event group.",
     schema: MonitorEventsInput,
-    examples: [{ name: "recent events", input: { monitor_id: "mon_...", lookback_period: "7d" } }],
+    examples: [{ name: "recent events", input: { monitor_id: "mon_...", limit: 20 } }],
     capability: {
       command: "monitors events",
       lifecycle: "scheduled_monitor",
@@ -378,21 +479,42 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
   {
     command: "monitors simulate",
     schema_id: "parallel.monitors.simulate.input/v1",
-    description: "Ask Parallel to simulate a monitor webhook event.",
+    description: "Alias for monitors trigger. V1 removed synthetic simulate_event.",
     schema: MonitorSimulateInput,
     examples: [
       {
-        name: "simulate detected event",
-        input: { monitor_id: "mon_...", event_type: "monitor.event.detected" },
+        name: "trigger off-schedule run",
+        input: { monitor_id: "mon_..." },
       },
     ],
     capability: {
       command: "monitors simulate",
       lifecycle: "scheduled_monitor",
       supported_actions: ["events"],
+      unsupported_actions: [
+        {
+          action: "simulate",
+          reason: "Monitor V1 removed simulate_event; this command enqueues a real off-schedule run.",
+        },
+      ],
+      supports_batch: false,
+      supports_artifacts: false,
+    },
+  },
+  {
+    command: "monitors trigger",
+    schema_id: "parallel.monitors.trigger.input/v1",
+    description: "Enqueue a real off-schedule monitor run without changing the regular frequency.",
+    schema: MonitorIdInput,
+    examples: [{ name: "trigger monitor", input: { monitor_id: "mon_..." } }],
+    capability: {
+      command: "monitors trigger",
+      lifecycle: "scheduled_monitor",
+      supported_actions: ["events"],
       unsupported_actions: [],
       supports_batch: false,
       supports_artifacts: false,
+      idempotency: localIdempotency,
     },
   },
 ]
