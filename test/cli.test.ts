@@ -397,7 +397,6 @@ describe("parallel CLI", () => {
                 {
                   processor: "core",
                   output_schema: {
-                    type: "json",
                     json_schema: {
                       type: "object",
                       properties: { ceo_name: { type: "string" } },

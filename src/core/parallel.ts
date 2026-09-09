@@ -179,7 +179,9 @@ const ExcludeCandidate = Schema.Struct({
 })
 
 const JsonOutputSchema = Schema.Struct({
-  type: Schema.Literal("json"),
+  type: Schema.optionalWith(Schema.Literal("json"), {
+    default: () => "json" as const,
+  }),
   json_schema: JsonRecord,
 })
 
