@@ -1061,16 +1061,26 @@ export const simulateMonitorEvent = (input: typeof MonitorSimulateInput.Type) =>
   )
 
 export const listMonitorEvents = (input: typeof MonitorEventsInput.Type) =>
-  requestJson({
-    method: "GET",
-    path: `/v1/monitors/${encodeURIComponent(input.monitor_id)}/events`,
-    query: {
-      ...(input.event_group_id ? { event_group_id: input.event_group_id } : {}),
-      ...(input.cursor ? { cursor: input.cursor } : {}),
-      ...(input.limit === undefined ? {} : { limit: String(input.limit) }),
-      ...(input.include_completions === undefined
-        ? {}
-        : { include_completions: String(input.include_completions) }),
-    },
-    responseSchema: MonitorEventsResponse,
+  Effect.gen(function* () {
+    if (input.lookback !== undefined || input.lookback_period !== undefined) {
+      return yield* new CommandInputError({
+        field: "lookback_period",
+        message:
+          "Monitor V1 removed lookback_period; use cursor and limit for event pagination",
+      })
+    }
+
+    return yield* requestJson({
+      method: "GET",
+      path: `/v1/monitors/${encodeURIComponent(input.monitor_id)}/events`,
+      query: {
+        ...(input.event_group_id ? { event_group_id: input.event_group_id } : {}),
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+        ...(input.limit === undefined ? {} : { limit: String(input.limit) }),
+        ...(input.include_completions === undefined
+          ? {}
+          : { include_completions: String(input.include_completions) }),
+      },
+      responseSchema: MonitorEventsResponse,
+    })
   })

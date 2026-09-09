@@ -539,6 +539,22 @@ describe("parallel CLI", () => {
     ),
   )
 
+  it.effect("monitors events rejects lookback_period removed in v1", () =>
+    Effect.gen(function* () {
+      const result = yield* runCli(
+        ["monitors", "events", '{"monitor_id":"mon_1","lookback_period":"7d"}'],
+        { PARALLEL_API_KEY: "test-key", PARALLEL_API_BASE_URL: "http://127.0.0.1:9" },
+      )
+      const payload = expectJson<{ error: { type: string; details: { field?: string } } }>(
+        result.stderr,
+      )
+
+      expect(result.exitCode).toBe(1)
+      expect(payload.error.type).toBe("CommandInputError")
+      expect(payload.error.details.field).toBe("lookback_period")
+    }),
+  )
+
   it.effect("monitors trigger posts the v1 trigger endpoint", () =>
     withMockServer(
       (request) => {
