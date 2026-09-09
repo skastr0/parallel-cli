@@ -94,18 +94,20 @@ describe("parallel CLI", () => {
     withMockServer(
       (request) => {
         expect(request.method).toBe("POST")
-        expect(request.url).toBe("/v1beta/search")
+        expect(request.url).toBe("/v1/search")
         expect(request.headers["x-api-key"]).toBe("test-key")
-        expect(request.headers["parallel-beta"]).toBe("search-extract-2025-10-10")
+        expect(request.headers["parallel-beta"]).toBeUndefined()
         expect(request.body).toEqual({
           objective: "find docs",
-          mode: "agentic",
-          max_results: 3,
+          search_queries: ["find docs"],
+          mode: "advanced",
+          advanced_settings: { max_results: 3 },
         })
 
         return {
           body: {
             search_id: "search_1",
+            session_id: "session_1",
             results: [{ url: "https://example.com", title: "Example", excerpts: ["A"] }],
           },
         }
@@ -122,13 +124,14 @@ describe("parallel CLI", () => {
           const payload = expectJson<{
             ok: boolean
             command: string
-            data: { search_id: string; result_count: number }
+            data: { search_id: string; session_id: string; result_count: number }
           }>(result.stdout)
 
           expect(result.exitCode).toBe(0)
           expect(result.stderr.trim()).toBe("")
           expect(payload.command).toBe("search")
           expect(payload.data.search_id).toBe("search_1")
+          expect(payload.data.session_id).toBe("session_1")
           expect(payload.data.result_count).toBe(1)
         }),
     ),
@@ -141,6 +144,7 @@ describe("parallel CLI", () => {
           search_id: request.body && typeof request.body === "object" && "objective" in request.body
             ? `search_${request.body.objective}`
             : "search_unknown",
+          session_id: "session_input",
           results: [],
         },
       }),
@@ -162,8 +166,8 @@ describe("parallel CLI", () => {
           expect(fileResult.exitCode).toBe(0)
           expect(stdinResult.exitCode).toBe(0)
           expect(requests.map((request) => request.body)).toEqual([
-            { objective: "file", mode: "one-shot", max_results: 10 },
-            { objective: "stdin", mode: "one-shot", max_results: 10 },
+            { objective: "file", search_queries: ["file"], mode: "fast" },
+            { objective: "stdin", search_queries: ["stdin"], mode: "fast" },
           ])
         }),
     ),
@@ -174,6 +178,7 @@ describe("parallel CLI", () => {
       (request) => ({
         body: {
           search_id: `search_${(request.body as { objective: string }).objective}`,
+          session_id: "session_batch",
           results: [],
         },
       }),
@@ -224,11 +229,347 @@ describe("parallel CLI", () => {
     ),
   )
 
+  it.effect("extract posts v1 payload with advanced_settings", () =>
+    withMockServer(
+      (request) => {
+        expect(request.method).toBe("POST")
+        expect(request.url).toBe("/v1/extract")
+        expect(request.headers["parallel-beta"]).toBeUndefined()
+        expect(request.body).toEqual({
+          urls: ["https://parallel.ai"],
+          objective: "Extract product names",
+          session_id: "session_extract",
+          client_model: "grok-4",
+          max_chars_total: 20000,
+          advanced_settings: {
+            excerpt_settings: { max_chars_per_result: 4000 },
+            full_content: true,
+          },
+        })
+
+        return {
+          body: {
+            extract_id: "extract_1",
+            session_id: "session_extract",
+            results: [{
+              url: "https://parallel.ai",
+              title: "Parallel",
+              excerpts: ["API"],
+              full_content: "# Parallel",
+            }],
+            errors: [],
+          },
+        }
+      },
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(
+            [
+              "extract",
+              JSON.stringify({
+                urls: ["https://parallel.ai"],
+                objective: "Extract product names",
+                session_id: "session_extract",
+                client_model: "grok-4",
+                max_chars_total: 20000,
+                excerpts: { max_chars_per_result: 4000 },
+                full_content: true,
+              }),
+            ],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+            },
+          )
+          const payload = expectJson<{
+            data: { extract_id: string; session_id: string; result_count: number }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.extract_id).toBe("extract_1")
+          expect(payload.data.session_id).toBe("session_extract")
+          expect(payload.data.result_count).toBe(1)
+        }),
+    ),
+  )
+
+  it.effect("extract rejects excerpts false because v1 always returns excerpts", () =>
+    Effect.gen(function* () {
+      const result = yield* runCli(
+        ["extract", '{"urls":["https://example.com"],"excerpts":false}'],
+        { PARALLEL_API_KEY: "test-key", PARALLEL_API_BASE_URL: "http://127.0.0.1:9" },
+      )
+      const payload = expectJson<{ error: { type: string; details: { field?: string } } }>(
+        result.stderr,
+      )
+
+      expect(result.exitCode).toBe(1)
+      expect(payload.error.type).toBe("CommandInputError")
+      expect(payload.error.details.field).toBe("excerpts")
+    }),
+  )
+
+  it.effect("findall entity-search posts the beta entity-search path", () =>
+    withMockServer(
+      (request) => {
+        expect(request.method).toBe("POST")
+        expect(request.url).toBe("/v1beta/findall/entity-search")
+        expect(request.headers["parallel-beta"]).toBeUndefined()
+        expect(request.body).toEqual({
+          entity_type: "companies",
+          objective: "AI startups in San Francisco",
+          match_limit: 25,
+        })
+
+        return {
+          body: {
+            entity_set_id: "entity_set_1",
+            entities: [
+              {
+                name: "Figure AI",
+                url: "https://www.figure.ai",
+                description: "Humanoid robots",
+              },
+            ],
+          },
+        }
+      },
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(
+            [
+              "findall",
+              "entity-search",
+              '{"entity_type":"companies","objective":"AI startups in San Francisco","match_limit":25}',
+            ],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+            },
+          )
+          const payload = expectJson<{
+            command: string
+            data: { entity_set_id: string; entity_count: number }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.command).toBe("findall entity-search")
+          expect(payload.data.entity_set_id).toBe("entity_set_1")
+          expect(payload.data.entity_count).toBe(1)
+        }),
+    ),
+  )
+
+  it.effect("findall entity-search rejects match_limit below 5", () =>
+    Effect.gen(function* () {
+      const result = yield* runCli(
+        [
+          "findall",
+          "entity-search",
+          '{"entity_type":"people","objective":"AI researchers","match_limit":2}',
+        ],
+        { PARALLEL_API_KEY: "test-key", PARALLEL_API_BASE_URL: "http://127.0.0.1:9" },
+      )
+      const payload = expectJson<{ error: { type: string; details: { field?: string } } }>(
+        result.stderr,
+      )
+
+      expect(result.exitCode).toBe(1)
+      expect(payload.error.type).toBe("CommandInputError")
+      expect(payload.error.details.field).toBe("match_limit")
+    }),
+  )
+
+  it.effect("findall start ingests, creates a flattened v1 run, then applies enrichments", () =>
+    withMockServer(
+      (request) => {
+        if (request.url === "/v1beta/findall/ingest") {
+          expect(request.body).toEqual({ objective: "Find AI companies that raised Series A in 2024" })
+          expect(request.headers["parallel-beta"]).toBeUndefined()
+          return {
+            body: {
+              objective: "Find AI companies that raised Series A in 2024",
+              entity_type: "companies",
+              match_conditions: [
+                { name: "series_a_2024", description: "Raised Series A in 2024" },
+              ],
+              enrichments: [
+                {
+                  processor: "core",
+                  output_schema: {
+                    type: "json",
+                    json_schema: {
+                      type: "object",
+                      properties: { ceo_name: { type: "string" } },
+                    },
+                  },
+                },
+              ],
+              generator: "core",
+            },
+          }
+        }
+
+        if (request.url === "/v1beta/findall/runs") {
+          expect(request.body).toEqual({
+            objective: "Find AI companies that raised Series A in 2024",
+            entity_type: "companies",
+            match_conditions: [
+              { name: "series_a_2024", description: "Raised Series A in 2024" },
+            ],
+            generator: "core",
+            match_limit: 10,
+          })
+          expect((request.body as { enrichments?: unknown }).enrichments).toBeUndefined()
+          return { body: { findall_id: "fa_start" } }
+        }
+
+        expect(request.method).toBe("POST")
+        expect(request.url).toBe("/v1beta/findall/runs/fa_start/enrich")
+        expect(request.body).toEqual({
+          processor: "core",
+          output_schema: {
+            type: "json",
+            json_schema: {
+              type: "object",
+              properties: { ceo_name: { type: "string" } },
+            },
+          },
+        })
+        return {
+          body: {
+            objective: "Find AI companies that raised Series A in 2024",
+            entity_type: "companies",
+            match_conditions: [
+              { name: "series_a_2024", description: "Raised Series A in 2024" },
+            ],
+            generator: "core",
+            match_limit: 10,
+          },
+        }
+      },
+      (baseUrl, requests) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(
+            ["findall", "start", '{"objective":"Find AI companies that raised Series A in 2024"}'],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+            },
+          )
+          const payload = expectJson<{
+            data: { findall_id: string; entity_type: string; generator: string }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.findall_id).toBe("fa_start")
+          expect(payload.data.entity_type).toBe("companies")
+          expect(payload.data.generator).toBe("core")
+          expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+            "POST /v1beta/findall/ingest",
+            "POST /v1beta/findall/runs",
+            "POST /v1beta/findall/runs/fa_start/enrich",
+          ])
+        }),
+    ),
+  )
+
+  it.effect("findall start rejects string exclude_list values", () =>
+    Effect.gen(function* () {
+      const result = yield* runCli(
+        [
+          "findall",
+          "start",
+          '{"objective":"Find AI companies","exclude_list":["Example Corp"]}',
+        ],
+        { PARALLEL_API_KEY: "test-key", PARALLEL_API_BASE_URL: "http://127.0.0.1:9" },
+      )
+      const payload = expectJson<{ error: { type: string } }>(result.stderr)
+
+      expect(result.exitCode).toBe(1)
+      expect(payload.error.type).toBe("JsonInputError")
+    }),
+  )
+
+  it.effect("monitors create posts the v1 event_stream payload", () =>
+    withMockServer(
+      (request) => {
+        expect(request.method).toBe("POST")
+        expect(request.url).toBe("/v1/monitors")
+        expect(request.body).toEqual({
+          type: "event_stream",
+          frequency: "1d",
+          processor: "lite",
+          settings: { query: "Notable news about Parallel Web Systems" },
+        })
+
+        return {
+          body: {
+            type: "event_stream",
+            monitor_id: "mon_created",
+            status: "active",
+            frequency: "1d",
+            processor: "lite",
+            created_at: "2026-04-24T00:00:00.000Z",
+            settings: { query: "Notable news about Parallel Web Systems" },
+          },
+        }
+      },
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(
+            [
+              "monitors",
+              "create",
+              '{"query":"Notable news about Parallel Web Systems","cadence":"daily"}',
+            ],
+            {
+              PARALLEL_API_KEY: "test-key",
+              PARALLEL_API_BASE_URL: baseUrl,
+            },
+          )
+          const payload = expectJson<{
+            data: { monitor_id: string; type?: string; query?: string }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.monitor_id).toBe("mon_created")
+          expect(payload.data.type).toBe("event_stream")
+          expect(payload.data.query).toBe("Notable news about Parallel Web Systems")
+        }),
+    ),
+  )
+
+  it.effect("monitors trigger posts the v1 trigger endpoint", () =>
+    withMockServer(
+      (request) => {
+        expect(request.method).toBe("POST")
+        expect(request.url).toBe("/v1/monitors/mon_1/trigger")
+        return { status: 204, rawBody: "" }
+      },
+      (baseUrl) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(["monitors", "trigger", '{"monitor_id":"mon_1"}'], {
+            PARALLEL_API_KEY: "test-key",
+            PARALLEL_API_BASE_URL: baseUrl,
+          })
+          const payload = expectJson<{ data: { monitor_id: string; triggered: boolean } }>(
+            result.stdout,
+          )
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.monitor_id).toBe("mon_1")
+          expect(payload.data.triggered).toBe(true)
+        }),
+    ),
+  )
+
   it.effect("artifact output writes compact summary and JSON artifact", () =>
     withMockServer(
       () => ({
         body: {
           search_id: "search_artifact",
+          session_id: "session_artifact",
           results: [{ url: "https://example.com", title: "Example", excerpts: ["A".repeat(128)] }],
         },
       }),
@@ -266,6 +607,7 @@ describe("parallel CLI", () => {
       () => ({
         body: {
           search_id: "search_home_artifact",
+          session_id: "session_home",
           results: [{ url: "https://example.com", title: "Example", excerpts: ["A"] }],
         },
       }),
@@ -532,7 +874,7 @@ describe("parallel CLI", () => {
       (request) => {
         expect(request.method).toBe("POST")
         expect(request.url).toBe("/v1beta/findall/runs/fa_1/cancel")
-        expect(request.headers["parallel-beta"]).toBe("findall-2025-09-15")
+        expect(request.headers["parallel-beta"]).toBeUndefined()
         return { rawBody: "" }
       },
       (baseUrl) =>
@@ -556,11 +898,10 @@ describe("parallel CLI", () => {
     withMockServer(
       (request) => {
         expect(request.method).toBe("GET")
-        expect(request.url).toBe("/v1alpha/monitors/mon_1/events?lookback_period=7d")
+        expect(request.url).toBe("/v1/monitors/mon_1/events?limit=20")
         return {
           body: {
-            events: [{ type: "completion", monitor_ts: "completed_2026-04-24T00:00:00Z" }],
-            has_more: false,
+            events: [{ event_type: "completion", timestamp: "2026-04-24T00:00:00Z" }],
           },
         }
       },
@@ -575,7 +916,7 @@ describe("parallel CLI", () => {
               "events",
               "--output",
               "artifact",
-              '{"monitor_id":"mon_1","lookback_period":"7d"}',
+              '{"monitor_id":"mon_1","limit":20}',
             ],
             {
               PARALLEL_API_KEY: "test-key",
@@ -602,17 +943,21 @@ describe("parallel CLI", () => {
     withMockServer(
       (request) => {
         expect(request.method).toBe("GET")
-        expect(request.url).toBe("/v1alpha/monitors")
+        expect(request.url).toBe("/v1/monitors")
         return {
-          body: [
-            {
-              monitor_id: "mon_1",
-              query: "news",
-              status: "active",
-              frequency: "1d",
-              created_at: "2026-04-24T00:00:00.000Z",
-            },
-          ],
+          body: {
+            monitors: [
+              {
+                type: "event_stream",
+                monitor_id: "mon_1",
+                status: "active",
+                frequency: "1d",
+                processor: "lite",
+                created_at: "2026-04-24T00:00:00.000Z",
+                settings: { query: "news" },
+              },
+            ],
+          },
         }
       },
       (baseUrl) =>
@@ -715,7 +1060,7 @@ describe("parallel CLI", () => {
           expect(payload.error.details.retryable).toBe(true)
           expect(payload.error.details.provider_request).toEqual({
             method: "POST",
-            path: "/v1beta/search",
+            path: "/v1/search",
             status: 429,
           })
           expect(payload.error.details.body.error.api_key).toBe("[REDACTED]")
