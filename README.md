@@ -52,7 +52,8 @@ All examples below prefer file payloads:
 // payloads/search.json
 {
   "objective": "Find official Parallel API docs",
-  "mode": "agentic",
+  "search_queries": ["Parallel API documentation"],
+  "mode": "fast",
   "max_results": 5
 }
 ```
@@ -74,7 +75,7 @@ parallel examples list
 parallel examples show search
 ```
 
-Search and Extract are synchronous provider calls:
+Search and Extract are synchronous provider calls to `/v1/search` and `/v1/extract`. When `search_queries` is omitted, the CLI derives one query from `objective`. Beta modes `one-shot` and `agentic` map to v1 `basic` and `advanced`. The default search mode is `fast`.
 
 ```bash
 parallel search @payloads/search.json
@@ -94,29 +95,32 @@ parallel deep-research cancel @payloads/task-run.json
 
 `deep-research cancel` reports an unsupported capability because the public Task Run API does not document a cancel endpoint.
 
-FindAll uses provider-owned asynchronous runs:
+FindAll uses provider-owned asynchronous runs on documented `/v1beta/findall/*` paths. `findall start` ingests an objective when `match_conditions` are omitted, creates a flattened V1 run, then applies ingest enrichments via `/enrich`.
 
 ```bash
 parallel findall start --idempotency-key findall-ai-infra @payloads/findall.json
+parallel findall entity-search @payloads/entity-search.json
 parallel findall inspect @payloads/findall-run.json
 parallel findall check --output auto @payloads/findall-run.json
 parallel findall wait @payloads/findall-wait.json
 parallel findall events --output artifact @payloads/findall-events.json
+parallel findall enrich @payloads/findall-enrich.json
+parallel findall extend @payloads/findall-extend.json
 parallel findall cancel @payloads/findall-run.json
 ```
 
-Monitors are scheduled provider resources:
+Monitors are scheduled GA `/v1/monitors` resources:
 
 ```bash
 parallel monitors create --idempotency-key news-monitor @payloads/monitor.json
 parallel monitors list
 parallel monitors inspect @payloads/monitor-id.json
 parallel monitors events --output artifact @payloads/monitor-events.json
-parallel monitors simulate @payloads/monitor-simulate.json
+parallel monitors trigger @payloads/monitor-id.json
 parallel monitors cancel @payloads/monitor-id.json
 ```
 
-`monitors wait` reports an unsupported capability because monitor execution is scheduled or webhook-driven. Use `monitors events` for history/backfill.
+`monitors wait` reports an unsupported capability because monitor execution is scheduled or webhook-driven. Use `monitors events` for history/backfill. `monitors simulate` remains as an alias that enqueues a real off-schedule run; V1 removed synthetic `simulate_event`.
 
 ## Payload Examples
 
@@ -125,7 +129,17 @@ parallel monitors cancel @payloads/monitor-id.json
 {
   "urls": ["https://parallel.ai"],
   "objective": "Extract product names and API categories",
-  "full_content": true
+  "full_content": true,
+  "max_chars_total": 50000
+}
+```
+
+```json
+// payloads/entity-search.json
+{
+  "entity_type": "companies",
+  "objective": "AI startups in San Francisco",
+  "match_limit": 25
 }
 ```
 
@@ -157,10 +171,14 @@ parallel monitors cancel @payloads/monitor-id.json
 ```json
 // payloads/monitor.json
 {
+  "type": "event_stream",
   "query": "Notable news about Parallel Web Systems",
-  "cadence": "daily"
+  "frequency": "1d",
+  "processor": "lite"
 }
 ```
+
+`cadence` values `hourly`, `daily`, `weekly`, and `every_two_weeks` are still accepted and encoded as `frequency`.
 
 ## Batch Inputs
 
@@ -222,7 +240,7 @@ Failure:
     "details": {
       "provider_request": {
         "method": "POST",
-        "path": "/v1beta/search",
+        "path": "/v1/search",
         "status": 429
       },
       "retryable": true,
@@ -296,6 +314,8 @@ The project is not released until the maintainer explicitly approves the real ta
 - The CLI stores local artifact and idempotency receipt data on the user's machine; it does not synchronize that state across machines.
 - Local idempotency receipts cannot guarantee provider-level idempotency if a provider request succeeds but the local receipt write fails.
 - `deep-research cancel` and `monitors wait` intentionally report unsupported provider capabilities where the public Parallel API does not document the needed endpoint.
+- Chat Completions (`/v1beta/chat/completions`) and the Responses API are public but not wrapped here. Deep research remains the Task API orbit.
+- FindAll ingest/runs stay on `/v1beta/findall/*` because those are the documented paths; do not rewrite them to `/v1`.
 - npm installation depends on the generated platform package for the user's operating system and CPU architecture.
 
 ## Support And Security

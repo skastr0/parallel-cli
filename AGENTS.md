@@ -33,3 +33,10 @@ bun run npm:dry-run
 ```
 
 Use `PARALLEL_API_BASE_URL` for mock servers in tests. Do not hit the live Parallel API from unit tests.
+
+## Provider paths
+
+- Search/Extract: `POST /v1/search` and `POST /v1/extract`. Do not default to `/v1beta`.
+- FindAll ingest, runs, entity-search, enrich, extend, events, and cancel stay on documented `/v1beta/findall/*` paths. Do not rewrite those to `/v1`.
+- Tasks: `/v1/tasks/runs`.
+- Monitors: `/v1/monitors` (GA). Alpha `/v1alpha/monitors` is legacy.

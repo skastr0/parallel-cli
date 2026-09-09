@@ -1,6 +1,6 @@
 {
   "name": "@skastr0/parallel-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "JSON-first Effect CLI for Parallel API operations.",
   "type": "module",
   "private": true,
