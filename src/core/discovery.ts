@@ -490,7 +490,7 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     capability: {
       command: "monitors simulate",
       lifecycle: "scheduled_monitor",
-      supported_actions: ["events"],
+      supported_actions: ["trigger"],
       unsupported_actions: [
         {
           action: "simulate",
@@ -510,7 +510,7 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     capability: {
       command: "monitors trigger",
       lifecycle: "scheduled_monitor",
-      supported_actions: ["events"],
+      supported_actions: ["trigger"],
       unsupported_actions: [],
       supports_batch: false,
       supports_artifacts: false,

@@ -1022,9 +1022,19 @@ describe("parallel CLI", () => {
       expect(examples.exitCode).toBe(0)
       expect(doctor.exitCode).toBe(0)
 
-      expect(expectJson<{ data: { commands: ReadonlyArray<{ command: string }> } }>(
-        capabilities.stdout,
-      ).data.commands.some((command) => command.command === "deep-research start")).toBe(true)
+      const capabilityCommands = expectJson<{
+        data: {
+          commands: ReadonlyArray<{
+            command: string
+            supported_actions: ReadonlyArray<string>
+          }>
+        }
+      }>(capabilities.stdout).data.commands
+      expect(capabilityCommands.some((command) => command.command === "deep-research start")).toBe(true)
+      expect(capabilityCommands.find((command) => command.command === "monitors trigger")?.supported_actions)
+        .toEqual(["trigger"])
+      expect(capabilityCommands.find((command) => command.command === "monitors simulate")?.supported_actions)
+        .toEqual(["trigger"])
       expect(expectJson<{ data: { schemas: ReadonlyArray<{ schema_id: string }> } }>(
         schemaList.stdout,
       ).data.schemas.some((schema) => schema.schema_id === "parallel.search.input/v1")).toBe(true)

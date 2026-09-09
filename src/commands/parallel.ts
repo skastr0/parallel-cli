@@ -344,7 +344,7 @@ const normalizeMonitor = (monitor: {
   webhook_configured: Boolean(monitor.webhook),
   lifecycle: {
     provider_async: true,
-    supported_actions: ["inspect", "events", "cancel"],
+    supported_actions: ["inspect", "events", "trigger", "cancel"],
     unsupported_actions: [
       {
         action: "wait",
