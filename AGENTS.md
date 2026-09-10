@@ -1,3 +1,12 @@
+## Status: superseded by survey-cli
+
+This provider-specific CLI is in maintenance-only mode. The canonical product is
+`survey` — the consolidated researcher toolkit at
+~/Projects/survey-cli (github.com/skastr0/survey-cli) — which exposes this
+provider's full command surface under `survey <provider> ...` plus unified
+cross-provider commands (search/fetch/extract/research/verify/monitor/sql/runs/sources).
+New work goes to survey-cli; this repo is kept for reference and rollback.
+
 # parallel-cli Agent Guide
 
 ## Project Intent
